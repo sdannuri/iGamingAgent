@@ -1,477 +1,554 @@
 # IGamingSupportAgent — Requirements
 
-**Draft v0.2 · 13 August 2026**
+**Draft v0.3 · 13 August 2026**
 
-A multi-tenant SaaS AI support agent for iGaming operators. Operators connect their helpdesk and back office; the agent answers player conversations using live account state, and escalates to humans under defined rules.
+---
 
-**How to read this document.** Part 1 is context. Parts 2 and 3 are the **complete requirements catalogue** — everything the product must eventually do, independent of when we build it. Part 4 phases that catalogue into V1, V2 and V3. Parts 5–7 cover targets, open questions, and competitive context.
+## In one page
 
-**Convention.** `MUST` = mandatory for the phase it is assigned to. `SHOULD` = strong default, may be traded. Every requirement is written to be testable. Requirement IDs are stable — phasing may change, IDs do not.
+**What we're building.** Software that answers customer support questions for online gambling companies. An operator connects their help desk and their back office; our agent reads a player's actual account and answers their question. When it shouldn't answer, it hands the conversation to a human with everything that person needs to pick up where the agent left off.
+
+**Who buys it.** Multiple gambling operators, each on their own isolated setup, sharing one platform. Not a one-off build for a single company.
+
+**What makes it different from a chatbot.** A chatbot recites the bonus terms. This reads *your* wagering progress and tells you how much further you have to go. That requires a live connection to the operator's systems and a lot of care about who is allowed to see what.
+
+**What the first release will not do.** It will not change anything. It reads and it answers. It cannot issue a bonus, trigger a refund, or unlock an account — those come in the second release, once the first has proved it gets answers right.
+
+**The three rules everything else follows from:**
+
+1. **The agent never decides on its own to look at someone's account.** A written procedure decides that. The AI only reads out the facts it was handed and phrases them well.
+2. **Safety checks run before anything else, on every single message.** Problem-gambling signals, abusive messages, and legally sensitive topics are caught by a separate layer that can stop the agent before it does anything.
+3. **If we can't do something safely, a human gets it.** Never a guess, never silence.
+
+---
+
+## How to read this
+
+| If you are… | Read |
+|---|---|
+| **New to the project** | This page, then Part 1 |
+| **A CS or CX lead** | Part 2 sections 2.2–2.7 (what the agent does in conversations) and Part 5 (what success looks like) |
+| **Compliance or RG** | Part 2 section 2.8 (responsible gambling), Part 3 sections 3.4–3.6 (security, data, audit) |
+| **An engineer** | All of Parts 2 and 3, then `Design.md` |
+| **Deciding what to build first** | Part 4 (phasing) |
+| **Unfamiliar with a term** | The glossary at the end |
+
+**Conventions used here**
+
+- **MUST** — the release it's assigned to doesn't ship without it, unless someone explicitly decides otherwise.
+- **SHOULD** — a strong default, but tradeable.
+- Every requirement has a permanent ID (`FR-12`, `NFR-3`). **IDs never change**, even if we move a requirement to a different release. `Design.md` refers back to these.
+- **V1 / V2 / V3** are the three planned releases. Part 4 says which requirements land in each.
 
 ---
 
 # Part 1 — Context
 
-## 1.1 Decisions taken
+## 1.1 Decisions already made
 
-| Decision | Choice | Consequence |
+| Question | Answer | What follows from it |
 |---|---|---|
-| Tenancy | **Multi-tenant SaaS** | Per-tenant config and credentials, tenant isolation, self-serve onboarding. Substantially larger build than single-tenant. |
-| V1 agent authority | **Read + answer only** | Agent reads player state and answers. No writes to operator systems until V2. |
-| Channels / helpdesks | **Deferred** | Requirements are written channel-agnostic behind an adapter layer. Selection is a separate discussion. |
+| One customer or many? | **Many — a shared platform** | Every operator's data must be walled off from every other operator's. Each needs their own settings, their own credentials, and a way to set themselves up. This is a much bigger build than a one-off. |
+| Can the agent change things? | **No, not in V1. It reads and answers.** | Lower risk, faster to ship. But it also means V1 can't claim the automation rates competitors advertise. |
+| Which chat channels? | **Not decided yet** | Requirements below are written so the answer can slot in later without rework. |
 
-## 1.2 Architectural commitments
+## 1.2 The three rules, explained
 
-Three decisions that shape the whole catalogue and are assumed throughout:
+### Rule 1 — The procedure decides what happens; the AI decides what it says
 
-**The procedure decides what happens; the model decides what it says.** Support scenarios are declarative procedures executed step by step. The model classifies and phrases; it does not choose to touch player data. This is what makes preconditions provable and the audit trail meaningful — an architectural property, not a policy promise.
+Support scenarios are written down as step-by-step **procedures** — readable documents that a CS lead or compliance officer can write and review, not code. The procedure says which account details to look up and in what order. The AI's job is narrower than people expect: it works out what the player is asking, and it turns the facts the procedure fetched into a good sentence.
 
-**Safety gates sit outside the procedure engine.** RG screening, emotional-state assessment and always-escalate detection run as a pre-gate on every inbound message, before procedure selection, with authority to pre-empt. If they were procedure *steps*, any unauthored path would silently drop coverage. A post-gate validates every outbound message before it reaches a player.
+**Why this matters:** it means we can *prove* the agent checked someone's identity before telling them their balance, rather than promising that we asked it nicely. That proof is what a regulator wants to see.
 
-**Connectors are capability contracts, not integrations.** Each read step is backed by a declared capability. A tenant's connector implements what that operator can actually supply; procedures declare what they require; unmet capabilities disable the procedure for that tenant rather than failing at runtime.
+### Rule 2 — Safety checks sit outside the procedures
 
-## 1.3 What read-only means for V1
+Screening for problem gambling, distress, abuse, and legally sensitive topics happens on every incoming message, *before* the agent picks a procedure. It has the power to stop everything else.
 
-The benchmark competitor's positioning is *"chatbots answer questions, AI agents take action."* A read-only V1 sits on the wrong side of that line by their framing, so V1 must compete on the axes it can win: depth of account-specific context, answer accuracy, compliance posture, and escalation quality.
+**Why this matters:** if screening were just another step inside a procedure, then any procedure someone forgot to add it to would silently skip it. We're required to screen 100% of messages, and the only way that holds is if screening can't be skipped by accident. A second check runs on the way out, before any message reaches a player.
 
-**V1 cannot claim 80–90% automation.** A read-only agent's ceiling is the informational share of contacts. Phase targets in Part 5 are set accordingly. The action layer (§2.10) is specified now and enabled in V2 — designed in, not retrofitted.
+### Rule 3 — Connections to operator systems are a checklist, not a promise
+
+Every operator's back office is different. Some can tell us a player's bonus wagering progress; some can't. So each type of lookup is defined as a **capability** — a specific question we can ask an operator's systems. During setup we check which capabilities that operator actually supports. Procedures that need a missing capability are switched off for that operator, and those questions go to humans instead.
+
+**Why this matters:** we can start building without knowing what any given operator's systems can do, and a thin back office means a smaller agent rather than a broken one.
+
+## 1.3 What "read-only" means for the first release
+
+Our main competitor's pitch is *"chatbots answer questions, AI agents take action."* By that framing, a read-only V1 is on the wrong side of the line.
+
+That's an acceptable trade **only if** V1 wins on the things it can win on: accuracy, depth of account knowledge, compliance posture, and clean handoffs to humans. Two consequences run through this whole document:
+
+- **The action layer is designed now and switched on in V2.** It is not a retrofit. See `FR-3` and `FR-4`.
+- **V1 cannot honestly claim 80–90% automation.** A read-only agent can only fully handle the questions that are purely informational. Part 5 sets realistic targets.
 
 ---
 
-# Part 2 — Functional requirements
+# Part 2 — What the system does
 
-*Complete catalogue. Phase assignment is in Part 4.*
+*The complete list, regardless of which release it lands in. Part 4 assigns releases.*
 
-## 2.1 Procedure engine
+## 2.1 The procedure engine
+
+This is the core of the product. A procedure is a written document describing how to handle one kind of question — readable and editable by the people who own the process today, not just engineers.
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-1** | Procedures are declarative documents, authored and reviewable by non-engineers, versioned and diffable. | MUST |
-| **FR-2** | Each procedure declares: trigger conditions, preconditions, ordered steps, forbidden actions, escalation rules, disclosure requirements, data classification, and required connector capabilities. | MUST |
-| **FR-3** | Failed preconditions route to a defined fallback. The agent never proceeds on a guess. | MUST |
-| **FR-4** | The full step vocabulary — including write step types — exists from the first release. Execution of each type is gated by tenant policy and product phase. | MUST |
-| **FR-5** | A procedure referencing a disabled or unavailable step type fails validation at author time with a clear message, never at runtime in front of a player. | MUST |
-| **FR-6** | Every step execution records inputs, outputs, latency, decision taken, and the procedure version in force. | MUST |
-| **FR-7** | Dry-run mode executes a procedure against a real conversation and records what it *would* have said, without sending. | MUST |
-| **FR-8** | Procedures are per-tenant, drawn from a shared baseline library that tenants may adopt and override. | MUST |
-| **FR-9** | Procedure runs are short-lived and scoped to a turn-cluster, not to a whole conversation. A conversation holds a stack of runs, so a player raising two issues at once is handled correctly. | MUST |
-| **FR-10** | Procedures declare required capabilities. Where a tenant's connectors cannot supply one, the procedure is disabled for that tenant and matching contacts route to humans. | MUST |
-| **FR-11** | Tenants can author new procedures without engineering involvement. | MUST |
+| **FR-1** | Procedures are documents, not code. Non-engineers can write and review them. They are versioned, and changes can be compared side by side. | MUST |
+| **FR-2** | Each procedure states: what triggers it, what must be true before it starts, its steps in order, what it is forbidden from doing, when to escalate, what must be disclosed to the player, what player data it may touch, and which operator-system capabilities it needs. | MUST |
+| **FR-3** | If a starting condition isn't met, the procedure routes to a defined fallback. The agent never carries on with a guess. | MUST |
+| **FR-4** | The full list of possible step types — including the action steps that change things — exists from the first release. Whether each type can actually run is controlled by settings. | MUST |
+| **FR-5** | A procedure that uses a step type that's switched off fails when it's written, with a clear message. It never fails live in front of a player. | MUST |
+| **FR-6** | Every step that runs is recorded: what went in, what came out, how long it took, what was decided, and which version of the procedure was in force. | MUST |
+| **FR-7** | **Rehearsal mode.** A procedure can be run against real conversations and record what it *would* have said, without sending anything. | MUST |
+| **FR-8** | Each operator has their own procedures, starting from a shared library they can adopt and adjust. | MUST |
+| **FR-9** | A procedure handles one question, not one conversation. Players ask two things at once ("where's my deposit — and why can't I withdraw?"), so a conversation can have several procedures running. | MUST |
+| **FR-10** | Procedures state which operator-system capabilities they need. If an operator can't supply one, that procedure is switched off for them and those questions go to humans. | MUST |
+| **FR-11** | Operators can write new procedures without involving our engineers. | MUST |
 
-### Step vocabulary
+**FR-12** — These step types MUST exist:
 
-**FR-12** — The following step types MUST exist in the vocabulary.
+| Group | Steps | Plain meaning |
+|---|---|---|
+| **Identity** | `verify_identity` | Confirm this really is the account holder |
+| **Look things up** | `read_player_state`, `read_transactions`, `read_kyc_status`, `read_bonus_state`, `read_limits`, `read_knowledge` | Read account status, payments, document checks, bonuses, limits, and the operator's own written content |
+| **Decide and speak** | `classify`, `branch`, `wait`, `respond`, `escalate`, `log` | Work out what's being asked, take a different path depending on the answer, reply, hand to a human, keep a record |
+| **Change things** (V2) | `issue_bonus`, `trigger_refund`, `resend_verification`, `update_ticket`, `apply_limit`, `reset_credential`, `close_account` | Actions that alter something. Defined now, switched off until V2. |
 
-| Category | Steps |
+## 2.2 The starting set of procedures
+
+**FR-9 continued — FR-13** — These procedures MUST ship in the shared library. All of them only read.
+
+| Procedure | The player asks | What the agent does |
+|---|---|---|
+| **Where is my deposit** | "My deposit hasn't arrived" | Check identity → look up recent deposits → cross-check the balance → explain the status and when it'll land → if it failed or is missing, hand to the payments team with the full picture |
+| **Withdrawal status** | "Where's my withdrawal?" | Look up the withdrawal, any pending checks, expected timing → explain → escalate if it's stuck |
+| **Verification / KYC** | "Why isn't my account verified?" | Look up document status → explain exactly which documents are outstanding and why → hand over for document review |
+| **Bonus status** | "Where's my bonus? Why can't I withdraw?" | Look up the bonus and wagering progress → explain the terms against *their* actual progress → escalate to issue anything |
+| **Can't log in** | "I can't get into my account" | Look up account status → explain the type of problem → route to the right team |
+| **Limits and controls** | "How do I set a deposit limit?" | Look up current limits → explain → point to the operator's own tools |
+| **Responsible gambling** | Any sign of gambling harm | Pre-approved wording only, then straight to a trained human. Never a generated sentence. See §2.8 |
+| **Complaint or dispute** | Anything formal or contested | Straight to a human. Nothing generated goes to the player. See §2.8 |
+| **General questions** | Rules, payment methods, how a game works | Answer from the operator's own published content. No account lookup needed |
+
+**FR-14** — *Where is my deposit* is the **benchmark we build against**. It touches identity, payment data, cross-checking two systems, and escalation — all in one flow. If that works properly, most of the engine works.
+
+## 2.3 Knowing who the player is
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-15** | Identify the player using the operator's own stable customer ID. Matching on email address alone is not good enough. | MUST |
+| **FR-16** | Confirm identity before revealing anything about an account. The standard for "confirmed" is set per country, since the rules differ. | MUST |
+| **FR-17** | Detect self-excluded players and players in a cooling-off period the moment we identify them, and route them to a separate protective process — never a normal support flow. | MUST |
+| **FR-18** | If the operator's systems are down, hand over to a human and say so honestly. **Never guess. Never invent a status.** | MUST |
+| **FR-19** | Handle people who aren't logged in or don't have an account, without revealing anything account-specific. | MUST |
+
+## 2.4 Understanding the message
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-20** | Every incoming message is assessed before the agent acts: what's being asked, how the person feels, any gambling-harm signals, any abuse, what language, and how confident we are. | MUST |
+| **FR-21** | Those assessments run at the same time as each other, not one after another, to stay within the speed budget. | MUST |
+| **FR-22** | If confidence is below the operator's threshold, hand to a human rather than answering. | MUST |
+| **FR-23** | Spot when someone asks two things at once and handle each properly. | MUST |
+| **FR-24** | Support 120+ languages. Work out which one the player is using and reply in it. | MUST |
+| **FR-25** | Fixed, approved wording (gambling-harm messages, disclosures, handover messages) is translated by humans for each market. **Never machine-translated on the fly.** | MUST |
+
+## 2.5 Emotion and when to hand over
+
+Whether someone is upset changes how the agent should behave — but not in the obvious way.
+
+**In gambling support, mild frustration is normal, not exceptional.** People contact support because money is missing. A simple rule of "if annoyed, get a human" would send most of the workload to humans and destroy the point of the product. It would also often make things worse: for many questions, the fastest way to calm someone down is an accurate answer in three seconds, not a twenty-minute queue for a person who will read the same screen and say the same thing.
+
+**FR-26** — Assess emotional state on every incoming message, before acting.
+
+**FR-27** — Respond across five bands, not a yes/no switch:
+
+| What we detect | What the agent does |
 |---|---|
-| **Identity** | `verify_identity` |
-| **Read** | `read_player_state`, `read_transactions`, `read_kyc_status`, `read_bonus_state`, `read_limits`, `read_knowledge` |
-| **Control** | `classify`, `branch`, `wait`, `respond`, `escalate`, `log` |
-| **Write** | `issue_bonus`, `trigger_refund`, `resend_verification`, `update_ticket`, `apply_limit`, `reset_credential`, `close_account` |
-
-## 2.2 Baseline procedure library
-
-**FR-13** — The baseline library MUST ship with the following procedures.
-
-| Procedure | Player question | Behaviour |
-|---|---|---|
-| **Where is my deposit** | "My deposit hasn't arrived" | Verify identity → read transactions → cross-reference balance → explain status and timing → escalate to payments with context if failed or missing |
-| **Withdrawal status** | "Where is my withdrawal?" | Read withdrawal state, pending checks, expected timing → explain → escalate if stalled beyond threshold |
-| **KYC / verification** | "Why is my account not verified?" | Read KYC state → explain exactly which documents are outstanding and why → escalate for document review |
-| **Bonus status and eligibility** | "Where is my bonus / why can't I withdraw?" | Read bonus state and wagering progress → explain terms against *their* actual progress → escalate to issue |
-| **Account access / lock** | "I can't log in" | Read account status → explain cause class → escalate to the correct team |
-| **Limits and self-service controls** | "How do I set a deposit limit?" | Read current limits → explain → route to the operator's own control surface |
-| **Responsible gambling** | Any RG signal | Fixed approved copy + immediate escalation. Never generated text. See §2.9 |
-| **Complaint / dispute** | Regulatory or financial dispute | Escalate with zero generated text to the player. See §2.9 |
-| **General information** | Rules, payment methods, game rules | Knowledge retrieval, no account read required |
-
-**FR-14** — *Where is my deposit* is the **acceptance benchmark**. It exercises identity, payment data, back-office cross-reference, and escalation in a single flow.
-
-## 2.3 Identity and player context
+| **Distress or gambling harm** | Completely separate path. Approved wording, trained human. **Never the ordinary support queue.** |
+| **Abuse or threats** | Immediate handover, flagged, under its own policy |
+| **Very frustrated** | Answer only if we're confident and can settle it in one reply. Otherwise hand over |
+| **Mildly frustrated** | Answer, but change the tone — lead with the answer, drop the pleasantries, acknowledge briefly |
+| **Calm** | Normal |
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-15** | Resolve the player to a stable operator-side identifier on every conversation. Fuzzy email matching MUST NOT be the primary key. | MUST |
-| **FR-16** | Complete `verify_identity` before disclosing any account-specific data, to a standard configurable per jurisdiction. | MUST |
-| **FR-17** | Detect self-excluded and cooling-off players at identity resolution and route them to a distinct policy, never a standard support flow. | MUST |
-| **FR-18** | On operator back-office failure, degrade to escalation with a truthful explanation. Never guess, never fabricate a status. | MUST |
-| **FR-19** | Handle unidentified players (pre-login, pre-registration) under a restricted policy with no account-specific disclosure. | MUST |
+| **FR-28** | Gambling-harm detection **overrides** frustration handling. A distressed player must never end up in the ordinary support queue. | MUST |
+| **FR-29** | Abuse and threats have their own policy, separate from normal escalation. | MUST |
+| **FR-30** | Track whether someone is getting *more* upset over the conversation. A rising trend is a reason to hand over, regardless of the starting point. | MUST |
+| **FR-31** | Take account of repeat contacts. A calm third message about the same unresolved deposit matters more than one angry first message. | MUST |
+| **FR-32** | Check whether a human is actually available. Handing over at 3am when nobody is on shift produces silence — attempt the answer instead, and be honest about the wait. | MUST |
+| **FR-33** | The emotional reading also shapes *how* the agent writes, not just where the conversation goes. Detecting frustration and then replying cheerfully is worse than not detecting it. | MUST |
+| **FR-34** | Tune the thresholds per operator **and per market**. Emotion detection is much weaker outside English, and ordinary directness in some countries reads as anger to a model trained on English politeness. | MUST |
+| **FR-35** | Monitor how accurate emotion detection is in each language, and raise an alert if one market starts over-escalating. | MUST |
 
-## 2.4 Message comprehension
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-20** | Classify every inbound message before the agent acts: intent, emotional state, RG risk, abuse, language, and confidence. | MUST |
-| **FR-21** | Classification dimensions run concurrently rather than in sequence, to protect the latency budget. | MUST |
-| **FR-22** | Escalate rather than answer when confidence falls below the per-tenant threshold. | MUST |
-| **FR-23** | Detect multiple intents in a single message and resolve them as separate procedure runs (FR-9). | MUST |
-| **FR-24** | Support 120+ languages. Detect language per conversation and respond in kind. | MUST |
-| **FR-25** | Approved fixed copy (RG, disclosure, escalation) is human-translated per supported market. Never machine-translated at runtime. | MUST |
-
-## 2.5 Emotional state and routing
-
-Emotion is assessed on every message before the agent acts, and modulates behaviour across five bands rather than acting as a binary switch. In iGaming, mild frustration is the baseline rather than the exception — a binary rule escalates most of the inbound volume and destroys the automation rate, and an accurate instant answer is often the fastest de-escalation available.
-
-**FR-26** — The agent MUST assess emotional state on every inbound message, before acting.
-
-**FR-27** — Emotional state MUST drive the following graduated response.
-
-| Band | Behaviour |
-|---|---|
-| **Distress / RG** | Separate lane entirely. Fixed approved copy, trained human. **Never the general queue.** |
-| **Abuse or threat** | Immediate escalation, flagged, under its own handling policy |
-| **High frustration** | Proceed only if confidence is high and the issue is answerable this turn; otherwise escalate |
-| **Mild frustration** | Proceed, with tone shifted — lead with the answer, drop pleasantries, acknowledge briefly |
-| **Neutral** | Normal path |
+## 2.6 Handing over to a human
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-28** | RG and distress detection outranks and pre-empts frustration routing. A distressed player MUST NOT be routed to the general support queue. | MUST |
-| **FR-29** | Abuse and threats are handled under a distinct policy, not the standard escalation path. | MUST |
-| **FR-30** | Track emotional trajectory across turns. A rising slope is an escalation trigger independent of absolute level. | MUST |
-| **FR-31** | Factor repeat-contact history into routing. A calm third contact about the same issue outranks a single angry first contact. | MUST |
-| **FR-32** | Escalation decisions are availability-aware. Where no human is on shift, attempt the answer with honest disclosure of the wait rather than escalating into a void. | MUST |
-| **FR-33** | The emotional band feeds the composer, not only the router. Detecting frustration and replying in default voice is worse than not detecting it. | MUST |
-| **FR-34** | Emotion thresholds are calibrated per tenant **and per market**. Sentiment models degrade badly outside English, and ordinary directness in some markets reads as anger. | MUST |
-| **FR-35** | Monitor emotion classifier accuracy per language and alert on drift or over-escalation in any market. | MUST |
+| **FR-36** | **Once a human replies, the agent stops — permanently.** It only resumes if a human explicitly hands it back. | MUST |
+| **FR-37** | Every handover carries the full picture: who the player is, what the agent looked up, what it concluded, why it handed over, and the whole conversation. | MUST |
+| **FR-38** | If a player asks for a human, they get one immediately. No attempt to talk them out of it. | MUST |
+| **FR-39** | Which team receives a handover is configurable per operator, per topic, and per time of day. | MUST |
+| **FR-40** | Cap how many times the agent replies in one conversation. At the cap, hand over rather than keep going. | MUST |
+| **FR-41** | Track the state of each conversation: status, last message handled, replies sent, topic, confidence, emotional trend, and reason for handover. | MUST |
 
-## 2.6 Escalation and human handover
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-36** | Handover is **sticky**. Once a human replies, the agent does not resume unless a human explicitly hands back. | MUST |
-| **FR-37** | Escalation carries structured context: player identity, what the agent read, what it concluded, why it escalated, and the full transcript. | MUST |
-| **FR-38** | A player asking for a human is escalated immediately, with no deflection attempt. | MUST |
-| **FR-39** | Escalation targets are configurable per tenant, per intent, and per business hours. | MUST |
-| **FR-40** | Cap auto-replies per conversation; escalate on reaching the ceiling rather than continuing. | MUST |
-| **FR-41** | Track per-conversation state: status, last processed message, reply count, intent, confidence, emotional trajectory, escalation reason. | MUST |
-
-> **FR-36 is the highest-consequence behavioural requirement in this document.** An agent that reappears mid-human-conversation is the most damaging failure mode available to this design.
+> **FR-36 is the single most important behaviour in this document.** An agent that pipes up in the middle of a human's conversation is the most damaging thing this system could do.
 
 ## 2.7 Conversation mechanics
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-42** | Debounce fragmented player messages and answer once, when the thought is complete. | MUST |
-| **FR-43** | Disclose that the agent is automated in its first message of every conversation, under an unambiguously non-human name. | MUST |
-| **FR-44** | Sanitise all player-facing output before sending. | MUST |
-| **FR-45** | A safety post-gate validates every outbound message before send: locked copy verifiably came from locked copy, no inducement-shaped language, no other player's data present. | MUST |
-| **FR-46** | Treat all player-supplied and retrieved text as untrusted input. It MUST NOT be able to alter agent instructions or procedure control flow. | MUST |
+| **FR-42** | Wait a moment for people who send three short messages instead of one long one, then answer once. | MUST |
+| **FR-43** | Say it's an automated agent in the first message of every conversation, under a name that clearly isn't a person's. | MUST |
+| **FR-44** | Clean and sanitise everything before it's sent. | MUST |
+| **FR-45** | **Final check before sending.** Confirm approved wording really came from the approved list, that there's no promotional language, and that no other player's details have crept in. | MUST |
+| **FR-46** | Treat everything a player writes, and everything we retrieve, as untrusted. It must never be able to change the agent's instructions or take over a procedure. | MUST |
 
-## 2.8 Responsible gambling and compliance behaviour
+## 2.8 Responsible gambling and compliance
 
-iGaming is licensed. This section is not negotiable engineering preference.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-47** | Screen **100% of inbound messages** for distress and problem-gambling signals, regardless of intent or procedure. | MUST |
-| **FR-48** | RG screening is implemented in the pipeline pre-gate, not as a procedure step, so coverage cannot be lost by an unauthored path. | MUST |
-| **FR-49** | On any RG signal, send operator-approved jurisdiction-appropriate fixed copy and escalate immediately to a trained human. No generated text. | MUST |
-| **FR-50** | Maintain a per-tenant **always-escalate intent set**, defaulting to: responsible gambling and self-exclusion, account closure, complaints and disputes, AML and source-of-funds, chargebacks, legal threats, safeguarding and wellbeing, and anything with financial-remedy implications. | MUST |
-| **FR-51** | For always-escalate intents, **zero generated text reaches the player**. Fixed acknowledgement copy only. | MUST |
-| **FR-52** | Never generate promotional or inducement-shaped language. In several markets this is a licence condition, not a tone preference. | MUST |
-| **FR-53** | Procedure behaviour varies by player jurisdiction. Markets differ materially on bonus communication, RG intervention, and disclosure. | MUST |
-
-## 2.9 Knowledge and content
+Online gambling is licensed. This section isn't an engineering preference — it's the price of operating.
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-54** | Maintain a per-tenant knowledge index over operator content: T&Cs, bonus terms, help centre, payment methods, game rules. | MUST |
-| **FR-55** | Ground answers in indexed source content. The agent MUST NOT assert terms or policy it cannot ground. | MUST |
-| **FR-56** | Support content re-indexing on change, with staleness visible to the tenant. Wrong bonus terms are a complaint generator. | MUST |
-| **FR-57** | Maintain a per-market approved copy library for all fixed-copy responses. | MUST |
+| **FR-47** | Screen **every single incoming message** for distress and problem-gambling signals, whatever the message is about. | MUST |
+| **FR-48** | That screening is part of the pipeline, not a step inside a procedure — so no procedure can accidentally skip it. | MUST |
+| **FR-49** | On any gambling-harm signal: send the operator's pre-approved wording for that market and hand straight to a trained human. **Nothing generated.** | MUST |
+| **FR-50** | Keep a per-operator list of **always hand over** topics. The default list: responsible gambling and self-exclusion, closing an account, complaints and disputes, money-laundering and source-of-funds questions, chargebacks, legal threats, safeguarding and welfare concerns, and anything involving money being paid back. | MUST |
+| **FR-51** | On those topics, **not one generated word reaches the player.** Fixed acknowledgement wording only. | MUST |
+| **FR-52** | Never write anything promotional or that encourages more play. In several markets this is a licence condition, not a matter of tone. | MUST |
+| **FR-53** | Behaviour changes by the player's country. Markets differ substantially on bonus wording, gambling-harm intervention, and what must be disclosed. | MUST |
 
-## 2.10 Action execution — writes
-
-Specified now, enabled in V2. The engine, audit trail, preconditions and guardrails are identical to read steps; only the executor is gated.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-58** | Execute write steps against operator systems within procedure-declared guardrails. | MUST |
-| **FR-59** | Every write is preconditioned and idempotent. A retry MUST NOT double-issue a bonus or double-refund. | MUST |
-| **FR-60** | Write authority is configurable per tenant and per procedure, with monetary ceilings and rate caps. | MUST |
-| **FR-61** | Writes above a configured threshold require dual control or human approval before execution. | MUST |
-| **FR-62** | Every write is reversible, or gated behind human approval where it is not. | MUST |
-| **FR-63** | Write actions are recorded in a distinct, immutable action log separate from conversation audit. | MUST |
-| **FR-64** | A tenant-scoped switch disables all writes independently of the conversational kill switch. | MUST |
-
-## 2.11 Agent-assist mode
+## 2.9 Operator content and knowledge
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-65** | Produce AI suggestions visible to human agents only, never to players — same procedures, same context, no player-facing risk. | MUST |
-| **FR-66** | Measure suggestion accept rate and edit distance as a quality signal. | SHOULD |
+| **FR-54** | Keep a searchable copy of each operator's own content: terms and conditions, bonus terms, help centre, payment methods, game rules. | MUST |
+| **FR-55** | Answers must be based on that content. The agent must not state terms or policy it can't point to a source for. | MUST |
+| **FR-56** | Re-read the content when it changes, and show the operator when it's gone stale. Quoting last month's bonus terms generates complaints. | MUST |
+| **FR-57** | Keep a per-market library of approved fixed wording. | MUST |
 
-## 2.12 Proactive outbound
+## 2.10 Taking action (second release)
 
-| ID | Requirement | |
-|---|---|---|
-| **FR-67** | Trigger proactive outreach on behavioural signals: churn risk, milestones, stalled KYC, failed payments. | MUST |
-| **FR-68** | Check marketing permission and jurisdictional inducement rules before any outbound message. This is a materially different compliance problem from inbound. | MUST |
-| **FR-69** | Apply frequency capping per player across all proactive campaigns. | MUST |
-| **FR-70** | Proactive RG outreach is a distinct path from commercial outreach, with separate approval and copy. | MUST |
-| **FR-71** | Suppress all commercial outreach to self-excluded, cooling-off, and RG-flagged players. | MUST |
-
-## 2.13 Multi-tenant configuration and onboarding
+Written down now, switched on in V2. The engine, the record-keeping, the pre-checks, and the guardrails are identical to reading — only the switch differs.
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-72** | Self-serve onboarding: connect helpdesk → connect back office → map identity → negotiate capabilities → adopt baseline procedures → dry-run → go live. | MUST |
-| **FR-73** | Capability negotiation at onboarding determines which procedures are available to that tenant (FR-10). | MUST |
-| **FR-74** | Per-tenant configuration covers at minimum: confidence thresholds, emotion band thresholds, always-escalate set, auto-reply ceiling, debounce window, latency ceiling, disclosure copy, RG copy, supported languages, jurisdiction map, business hours, escalation targets, write authority, kill switches. | MUST |
-| **FR-75** | Store operator credentials per tenant, individually revocable. | MUST |
-| **FR-76** | Provide tenant-scoped and global **kill switches** that immediately stop all player-facing output while leaving ingestion, classification, and logging running. | MUST |
-| **FR-77** | Gate every procedure release behind a dry-run. | MUST |
+| **FR-58** | Carry out actions on operator systems, within the limits the procedure sets. | MUST |
+| **FR-59** | Every action is checked beforehand and safe to retry. A retry must never issue a bonus twice or refund twice. | MUST |
+| **FR-60** | Set per-operator, per-procedure limits on what the agent may do — money ceilings and rate caps. | MUST |
+| **FR-61** | Above a set value, a human approves before anything happens. | MUST |
+| **FR-62** | Every action is reversible, or it requires human approval. | MUST |
+| **FR-63** | Actions are recorded in their own separate, unalterable log. | MUST |
+| **FR-64** | A switch that stops all actions on its own, independently of the switch that stops the agent talking. | MUST |
 
-## 2.14 Integration and channel behaviour
-
-Channel selection is deferred; these hold on any channel.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-78** | A channel adapter layer normalises inbound events to a canonical conversation event and renders outbound messages per channel. | MUST |
-| **FR-79** | Acknowledge inbound events fast and process asynchronously. Inference will exceed typical webhook acknowledgement windows. | MUST |
-| **FR-80** | Do not trust event delivery. Reconcile periodically against the source of truth and repair anything missed. | MUST |
-| **FR-81** | Treat events as wake-up signals and re-fetch conversation state. Message ordering is not guaranteed. | MUST |
-| **FR-82** | Make all outbound player-facing messages idempotent, keyed to the triggering inbound message. A duplicate message is worse than a slow one. | MUST |
-| **FR-83** | Assume sent messages cannot be edited or deleted. A wrong answer about a withdrawal or bonus is permanent and visible. | MUST |
-| **FR-84** | Apply per-tenant rate limiting against operator back-office APIs. We must not be why an operator's back office falls over. | MUST |
-
-## 2.15 Voice
+## 2.11 Helping human agents (second release)
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-85** | Support voice as a channel behind the same adapter layer, procedures, and safety gates. | MUST |
+| **FR-65** | Produce suggested answers that only human agents see — same procedures, same information, no risk to players. | MUST |
+| **FR-66** | Measure how often agents accept a suggestion and how much they change it. | SHOULD |
 
-## 2.16 Reporting and analytics
+## 2.12 Reaching out first (third release)
 
 | ID | Requirement | |
 |---|---|---|
-| **FR-86** | Per-tenant dashboard: volume, automation rate, escalation rate and reasons, CSAT, first-response time, resolution time, confidence distribution, top intents. | MUST |
-| **FR-87** | Write machine-readable outcomes (intent, confidence, escalation reason) back to the operator's own helpdesk so they can analyse in existing tooling. | MUST |
-| **FR-88** | ROI reporting: deflected contacts, agent-hours saved, cost per contact. The economic buyer will ask. | MUST |
-| **FR-89** | Quality review queue: sample conversations for human review, with corrections feeding back into procedures. | MUST |
-| **FR-90** | Alert on confidence drift, escalation-rate spikes, RG detection anomalies, emotion classifier drift, operator API failures, and delivery failures. | MUST |
-| **FR-91** | Report emotion band distribution and escalation outcomes per market, to tune FR-34 against real data. | MUST |
-| **FR-92** | Support-insight export: recurring intents and friction points, for the operator's product teams. | SHOULD |
+| **FR-67** | Start conversations based on player behaviour: risk of leaving, milestones, stalled verification, failed payments. | MUST |
+| **FR-68** | Check marketing permission and the country's rules on inducements before sending anything. This is a materially harder compliance problem than answering questions. | MUST |
+| **FR-69** | Cap how often any one player is contacted, across all campaigns. | MUST |
+| **FR-70** | Gambling-harm outreach is a completely separate path from commercial outreach, with its own approval and wording. | MUST |
+| **FR-71** | **Never send commercial messages to self-excluded, cooling-off, or at-risk players.** | MUST |
+
+## 2.13 Setting up and configuring an operator
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-72** | Operators set themselves up: connect help desk → connect back office → map player identity → check which capabilities they have → adopt procedures → rehearse → go live. | MUST |
+| **FR-73** | The capability check during setup decides which procedures that operator gets (see FR-10). | MUST |
+| **FR-74** | Configurable per operator, at minimum: confidence thresholds, emotion thresholds, always-hand-over topics, reply cap, waiting time, speed limit, disclosure wording, gambling-harm wording, languages, country mapping, opening hours, handover destinations, action permissions, and the stop switches. | MUST |
+| **FR-75** | Store each operator's system credentials separately, and let them be revoked individually. | MUST |
+| **FR-76** | **Stop switches** — one per operator and one global — that immediately stop everything the agent says to players, while still receiving messages, assessing them, and keeping records. | MUST |
+| **FR-77** | Every procedure change is rehearsed before it goes live. | MUST |
+
+## 2.14 Connecting to chat channels
+
+Which channels we support is still open. These hold whatever we choose.
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-78** | A translation layer converts each channel's messages into one common format, and formats replies for each channel. | MUST |
+| **FR-79** | Accept incoming messages quickly and do the thinking separately. The agent takes longer than most channels will wait. | MUST |
+| **FR-80** | Don't assume messages always arrive. Check periodically against the source and pick up anything missed. | MUST |
+| **FR-81** | Treat an incoming notification as "something happened, go look" rather than trusting its contents. Messages don't arrive in order. | MUST |
+| **FR-82** | Never send the same reply twice. A duplicate message to a player is worse than a slow one. | MUST |
+| **FR-83** | Assume a sent message can't be edited or deleted. A wrong answer about someone's withdrawal is permanent and public. | MUST |
+| **FR-84** | Limit how hard we query each operator's systems. We must not be the reason an operator's back office falls over. | MUST |
+
+## 2.15 Voice (third release)
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-85** | Support voice as another channel, using the same procedures and the same safety checks. | MUST |
+
+## 2.16 Reporting
+
+| ID | Requirement | |
+|---|---|---|
+| **FR-86** | A dashboard per operator: volume, how much was automated, how much was handed over and why, satisfaction scores, response and resolution times, confidence spread, most common topics. | MUST |
+| **FR-87** | Write the outcome of each conversation back into the operator's own help desk, so they can analyse it in the tools they already use. | MUST |
+| **FR-88** | Report the financial case: contacts handled, agent hours saved, cost per contact. The person signing the cheque will ask. | MUST |
+| **FR-89** | A review queue where humans check a sample of conversations, and their corrections feed back into the procedures. | MUST |
+| **FR-90** | Alert on: confidence drifting, handovers spiking, unusual gambling-harm patterns, emotion detection drifting, operator systems failing, messages failing to send. | MUST |
+| **FR-91** | Report emotion readings and handover outcomes per market, so FR-34's thresholds can be tuned against real data. | MUST |
+| **FR-92** | Export insights on recurring problems for the operator's product team. | SHOULD |
 
 ---
 
-# Part 3 — Non-functional requirements
+# Part 3 — How well it must do it
 
-## 3.1 Performance and latency
+## 3.1 Speed
 
-| ID | Requirement | Target |
+| ID | What | Target |
 |---|---|---|
-| **NFR-1** | Time to first player-visible response | < 3 s p95 |
-| **NFR-2** | Time to substantive answer | < 8 s p95 |
-| **NFR-3** | Hard latency ceiling, then escalate | 15 s |
-| **NFR-4** | Safety pre-gate resolution (RG, emotion, always-escalate) | < 400 ms |
-| **NFR-5** | Dead-air mitigation: immediate acknowledgement where the channel offers no typing indicator | Within NFR-1 |
-| **NFR-6** | Kill-switch propagation | < 10 s |
+| **NFR-1** | Player sees *something* | Under 3 seconds, 95% of the time |
+| **NFR-2** | Player has the actual answer | Under 8 seconds, 95% of the time |
+| **NFR-3** | Absolute ceiling before giving up and handing over | 15 seconds |
+| **NFR-4** | Safety checks complete | Under 0.4 seconds |
+| **NFR-5** | On channels with no "typing…" indicator, send an immediate acknowledgement | Within NFR-1 |
+| **NFR-6** | Stop switch takes effect | Under 10 seconds |
 
-## 3.2 Scale and capacity
+## 3.2 Volume
 
-| ID | Requirement | Target |
+| ID | What | Target |
 |---|---|---|
-| **NFR-7** | Sustained throughput per tenant | 100k conversations/month |
-| **NFR-8** | Peak burst without latency breach | 10× mean |
-| **NFR-9** | Noisy-neighbour isolation: one tenant's spike must not degrade another's latency | No cross-tenant impact |
+| **NFR-7** | Sustained load per operator | 100,000 conversations a month |
+| **NFR-8** | Sudden spike handled without slowing down | 10× normal |
+| **NFR-9** | One operator's spike must not slow another's | No knock-on effect |
 
-## 3.3 Availability and resilience
+## 3.3 Staying up
 
-| ID | Requirement | Target |
+| ID | What | Target |
 |---|---|---|
-| **NFR-10** | Ingestion availability | 99.9% |
-| **NFR-11** | Degradation fails to human escalation, never to silence | Always |
-| **NFR-12** | No inbound player message lost, including during partial outage | Zero loss |
+| **NFR-10** | Message intake available | 99.9% |
+| **NFR-11** | **When something breaks, conversations go to humans — never to silence** | Always |
+| **NFR-12** | No player message lost, even during a partial outage | Zero |
 
-## 3.4 Security and tenant isolation
+## 3.4 Security and keeping operators apart
 
 | ID | Requirement | |
 |---|---|---|
-| **NFR-13** | Tenant isolation enforced at the data layer. No query path may return one operator's player data to another. | MUST |
-| **NFR-14** | Operator credentials encrypted at rest and never written to logs. | MUST |
-| **NFR-15** | Operator credentials scoped to least privilege — read-only scopes until write phase. | MUST |
-| **NFR-16** | PII masked before content reaches any model provider. | MUST |
-| **NFR-17** | Secure SDLC with penetration testing before first production tenant. | MUST |
+| **NFR-13** | Operators are separated at the database level. No possible query can return one operator's player data to another. | MUST |
+| **NFR-14** | Operator credentials are encrypted and never written to logs. | MUST |
+| **NFR-15** | We ask for the narrowest possible access — read-only until the action release. | MUST |
+| **NFR-16** | Personal details are masked before anything reaches an AI provider. | MUST |
+| **NFR-17** | Secure development process, with penetration testing before the first live operator. | MUST |
 
-> **NFR-13 is the highest-severity requirement in this document.** Cross-tenant player data exposure is the failure that ends the product.
+> **NFR-13 is the highest-severity requirement here.** One operator seeing another operator's players is the failure that ends the company.
 
-## 3.5 Data protection, residency and retention
-
-| ID | Requirement | |
-|---|---|---|
-| **NFR-18** | Zero retention with the model provider. No training on operator or player data. | MUST |
-| **NFR-19** | Data residency configurable per tenant and per jurisdiction. | MUST |
-| **NFR-20** | Retention periods configurable per tenant and per jurisdiction. | MUST |
-| **NFR-21** | Support data subject erasure requests across conversation and audit stores. | MUST |
-
-## 3.6 Auditability and compliance posture
+## 3.5 Data protection and where data lives
 
 | ID | Requirement | |
 |---|---|---|
-| **NFR-22** | Every interaction reconstructable end to end: what was read, what was decided, what was said, under which procedure version and policy configuration. | MUST |
-| **NFR-23** | Audit records immutable and tamper-evident. | MUST |
-| **NFR-24** | Audit export in a form an operator can hand to a regulator. | MUST |
-| **NFR-25** | SOC2 Type II certification. Enterprise deals will require it. | MUST |
+| **NFR-18** | The AI provider keeps nothing and trains on nothing. | MUST |
+| **NFR-19** | Which country data is stored in is configurable per operator and per market. | MUST |
+| **NFR-20** | How long data is kept is configurable per operator and per market. | MUST |
+| **NFR-21** | Support "delete everything about me" requests, across conversations and records. | MUST |
 
-## 3.7 Operability
+## 3.6 Proving what happened
 
-| ID | Requirement | Target |
+| ID | Requirement | |
 |---|---|---|
-| **NFR-26** | Procedure change to production, dry-run gated | < 1 hour |
-| **NFR-27** | Onboarding to first live conversation | Days, not weeks |
-| **NFR-28** | Per-tenant observability for our own ops team, with cross-tenant incident response | Continuous |
+| **NFR-22** | Any interaction can be reconstructed completely: what was looked up, what was decided, what was said, under which version of which procedure and which settings. | MUST |
+| **NFR-23** | Records can't be altered, and tampering would be detectable. | MUST |
+| **NFR-24** | Records can be exported in a form an operator can hand to a regulator. | MUST |
+| **NFR-25** | SOC 2 Type II certification. Enterprise deals will require it. | MUST |
 
-## 3.8 Authoring usability
+## 3.7 Running the service
 
-| ID | Requirement | Target |
+| ID | What | Target |
 |---|---|---|
-| **NFR-29** | A CS lead or compliance officer can author and dry-run a new procedure without engineering help | < 1 day, unaided |
+| **NFR-26** | A procedure change reaches production (after rehearsal) | Under 1 hour |
+| **NFR-27** | New operator from signing to first live conversation | Days, not weeks |
+| **NFR-28** | Our own team can see what's happening per operator and respond to incidents | Continuously |
 
-> NFR-29 is what makes the procedure engine an asset rather than a config file. If procedures need an engineer, we have built a slower version of hard-coded flows.
+## 3.8 Ease of authoring
+
+| ID | What | Target |
+|---|---|---|
+| **NFR-29** | A CS lead or compliance officer can write and rehearse a new procedure without an engineer | Under a day, unaided |
+
+> **NFR-29 is what turns the procedure engine into an asset rather than a config file.** If writing a procedure needs an engineer, we've built a slower version of hard-coded rules.
 
 ---
 
-# Part 4 — Phasing
+# Part 4 — What ships when
+
+```
+V1  Read and answer      →  V2  Act and assist      →  V3  Reach out and talk
+    66 new requirements       10 new requirements        6 new requirements
+    35–50% automated          70–85% automated           + prevented contacts
+    Wins on: accuracy         Wins on: parity            Wins on: retention
+    Risk: wrong answer        Risk: wrong transaction    Risk: wrong recipient
+```
 
 ## 4.1 V1 — Read and answer
 
-**Goal:** a compliant, accurate, account-aware agent that answers informational contacts and escalates everything else cleanly. Proves the procedure engine, the safety gates, and the connector model against a real tenant.
+**Goal:** a compliant, accurate agent that knows the player's actual account, answers what it safely can, and hands over everything else cleanly.
 
 | Area | Requirements |
 |---|---|
 | Procedure engine | FR-1 – FR-12 |
-| Baseline library | FR-13, FR-14 |
-| Identity and context | FR-15 – FR-19 |
-| Comprehension | FR-20 – FR-25 |
+| Starting procedures | FR-13, FR-14 |
+| Identity | FR-15 – FR-19 |
+| Understanding messages | FR-20 – FR-25 |
 | Emotion and routing | FR-26 – FR-35 |
-| Escalation and handover | FR-36 – FR-41 |
+| Handover | FR-36 – FR-41 |
 | Conversation mechanics | FR-42 – FR-46 |
-| RG and compliance | FR-47 – FR-53 |
-| Knowledge and content | FR-54 – FR-57 |
-| Tenant config and onboarding | FR-72 – FR-77 |
-| Integration | FR-78 – FR-84 |
+| Responsible gambling | FR-47 – FR-53 |
+| Operator content | FR-54 – FR-57 |
+| Setup and configuration | FR-72 – FR-77 |
+| Channels | FR-78 – FR-84 |
 | Reporting | FR-86 – FR-91 |
-| Non-functional | NFR-1 – NFR-24, NFR-26 – NFR-29 |
+| Everything in Part 3 | NFR-1 – NFR-24, NFR-26 – NFR-29 |
 
-**Deliberately included despite the cost:** the full step vocabulary (FR-4, FR-12) including write types, and least-privilege read-only credential scoping (NFR-15). Both exist so V2 is a policy change rather than a re-architecture.
+**Included even though nothing uses it yet:** the full step list including actions (FR-4, FR-12), and read-only credentials (NFR-15). Both exist so V2 is a settings change, not a rebuild.
 
-**Deliberately excluded:** all write execution, proactive outbound, voice, agent-assist. SOC2 certification (NFR-25) runs on a parallel timeline and will not have completed.
+**Deliberately left out:** all actions, proactive outreach, voice, agent suggestions. SOC 2 certification runs alongside and won't have finished.
 
-## 4.2 V2 — Action and assist
+## 4.2 V2 — Act and assist
 
-**Goal:** cross from answering to acting. This is where the automation rate moves and where the product matches the category's positioning.
+**Goal:** cross from answering to doing. This is where the automation rate moves and where we match what the category claims.
 
 | Area | Requirements |
 |---|---|
-| Write execution | FR-58 – FR-64 |
-| Agent-assist mode | FR-65, FR-66 |
+| Taking action | FR-58 – FR-64 |
+| Helping human agents | FR-65, FR-66 |
 | Insight export | FR-92 |
-| Compliance posture | NFR-25 (SOC2 Type II certified) |
-| Credential scope | NFR-15 extends to scoped write permissions |
+| SOC 2 certified | NFR-25 |
+| Credentials extended to include actions | NFR-15 |
 
-**Entry criteria — V2 write execution must not begin until V1 has demonstrated:**
+**V2 doesn't start on a date. It starts when V1 has proved:**
 
-- Wrong-answer rate on account-specific questions sustained below 0.5%
-- Zero always-escalate leakage incidents
-- Zero agent-talks-over-human incidents
-- Audit trail proven complete against a real compliance review
+- Wrong answers about someone's account stay below 0.5%
+- Zero occurrences of generated text on a forbidden topic
+- Zero occurrences of the agent talking over a human
+- The audit trail has survived a real compliance review
 
-Writes are the point at which a wrong answer becomes a wrong *transaction*. The V1 accuracy bar is the gate.
+Actions are the point where a wrong answer becomes a wrong transaction. The accuracy bar is the gate, not the calendar.
 
-## 4.3 V3 — Proactive and multi-channel
+## 4.3 V3 — Reach out and talk
 
-**Goal:** move from reactive support to retention. Support becomes a revenue surface rather than a cost centre.
+**Goal:** stop waiting for problems. Support becomes a way to keep players rather than a cost.
 
 | Area | Requirements |
 |---|---|
-| Proactive outbound | FR-67 – FR-71 |
+| Proactive outreach | FR-67 – FR-71 |
 | Voice | FR-85 |
 
-Proactive outbound carries a compliance problem V1 and V2 do not have: unsolicited contact is governed by marketing permission and jurisdictional inducement rules, and the penalty for messaging a self-excluded player is categorically worse than answering one badly. FR-71 is the requirement to be most careful with.
-
-## 4.4 Phase summary
-
-| | V1 | V2 | V3 |
-|---|---|---|---|
-| **Agent can** | Read, answer, escalate | Read, answer, act, assist | All of V2, plus initiate |
-| **New FRs** | 66 | 10 | 6 |
-| **Automation ceiling** | 35–50% | 70–85% | 70–85% + deflection |
-| **Positioning** | Accuracy and compliance | Category parity | Retention engine |
-| **Dominant risk** | Wrong answer | Wrong transaction | Wrong recipient |
+Reaching out first brings a compliance problem the first two releases don't have: uninvited contact is governed by marketing permission and each country's rules on encouraging play, and messaging a self-excluded player is categorically worse than answering someone badly. **FR-71 is the requirement to be most careful with in this document.**
 
 ---
 
-# Part 5 — Success criteria
+# Part 5 — What success looks like
 
 ## 5.1 V1
 
-| Metric | Target | Note |
+Set against a read-only agent. **These are not the numbers competitors advertise, and must not be presented as if they were.**
+
+| Measure | Target | Note |
 |---|---|---|
-| Full automation (no human touch) | 35–50% | Ceiling is the informational share of contacts |
-| Assisted resolution (agent gave context, human closed) | +25% | Real value even without writes |
-| CSAT on agent-handled conversations | ≥ 4.5 | |
-| First response time | < 5 s | Against a human baseline of minutes |
-| Wrong-answer rate on account-specific questions | < 0.5% | The metric that ends the product if it slips |
-| RG signal recall | > 99% | Missed RG signals are a licence risk |
-| Over-escalation from emotion gate, any single market | < 15% above global mean | Detects FR-34 calibration failure |
-| Always-escalate leakage | **0** | Any occurrence is a Sev-1 |
-| Agent-talks-over-human incidents | **0** | |
-| Cross-tenant data exposure | **0** | |
+| Handled with no human involvement | 35–50% | Limited by how many questions are purely informational |
+| Human closed it, but the agent did the legwork | +25% | Real value even without actions |
+| Player satisfaction on agent conversations | 4.5 or better out of 5 | |
+| Time to first reply | Under 5 seconds | Against a human baseline measured in minutes |
+| Wrong answers about someone's account | Under 0.5% | The number that ends the product if it slips |
+| Gambling-harm signals correctly caught | Over 99% | A missed signal is a licence risk |
+| Over-handover in any single market | No more than 15% above the average | Catches badly tuned emotion thresholds |
+| Generated text on a forbidden topic | **Zero** | Any occurrence is a top-severity incident |
+| Agent talking over a human | **Zero** | |
+| One operator seeing another's data | **Zero** | |
 
 ## 5.2 V2
 
-| Metric | Target |
+| Measure | Target |
 |---|---|
-| Full automation | 70–85% |
-| CSAT | ≥ 4.8 |
-| Incorrect write actions | **0** |
-| Write actions requiring reversal | < 0.1% |
-| Agent-assist suggestion accept rate | > 60% |
+| Handled with no human involvement | 70–85% |
+| Player satisfaction | 4.8 or better |
+| Incorrect actions taken | **Zero** |
+| Actions needing to be reversed | Under 0.1% |
+| Suggestions accepted by human agents | Over 60% |
 
 ## 5.3 V3
 
-| Metric | Target |
+| Measure | Target |
 |---|---|
-| Proactive contact deflection (tickets prevented) | Measurable reduction in matched inbound intents |
-| Outreach to suppressed player (self-excluded, cooling-off, RG-flagged) | **0** |
-| Marketing permission violations | **0** |
+| Contacts prevented by reaching out first | Measurable drop in matching incoming questions |
+| Messages sent to a self-excluded, cooling-off, or at-risk player | **Zero** |
+| Marketing permission breaches | **Zero** |
 
 ---
 
-# Part 6 — Open questions
+# Part 6 — Still to decide
 
-1. **Channels and helpdesks** — determines the adapter layer and which rich affordances are available. Next discussion.
-2. **Back-office diversity** — how many distinct platforms must we read from, and do they expose the payment, KYC, and bonus state the baseline procedures need? **The biggest unknown in the plan.** FR-10 and FR-73 are designed to survive a bad answer, but the baseline library's value depends on it.
-3. **Model hosting and data residency** — whether player conversation content may leave our infrastructure, and to which jurisdiction. Must be answered before any spike.
-4. **Identity assurance** — what satisfies FR-16 per jurisdiction. Under-specifying this is a data-protection incident.
-5. **Procedure authoring surface** — YAML, a generated UI, or structured prose the engine compiles. Determines whether NFR-29 is real or aspirational. Also the demo that wins deals.
-6. **Tenant isolation model** — logical tenancy with enforced tenant scoping, versus regional cells. Residency requirements may force cells regardless, which makes harder isolation cheaper than it first appears.
-7. **Design partner** — which operator, which markets, what volume. A single-market first tenant is a materially easier V1.
-8. **Pricing model** — per-resolution, per-seat, or per-volume changes what we must meter from day one.
+1. **Which chat channels and help desks.** Determines the translation layer and what rich features (buttons, etc.) are available. Next discussion.
+2. **How different operator back offices are.** How many platforms must we read from, and can they actually tell us about payments, verification, and bonuses? **This is the biggest unknown.** FR-10 and FR-73 are designed to survive a bad answer, but the value of the starting procedure library depends on it.
+3. **Where the AI runs and where data lives.** Whether player conversations may leave our infrastructure, and to which country. Must be settled before any prototype.
+4. **What counts as proving identity**, per country (FR-16). Getting this wrong is a data-protection incident.
+5. **How procedures are written** — a text format, a point-and-click builder, or structured plain English. Decides whether NFR-29 is real or aspirational. It's also the demo that wins deals.
+6. **How operators are separated** — logical separation within one system, or separate regional deployments. Data-residency rules may force the latter anyway, which makes stronger separation cheaper than it first looks.
+7. **First customer** — which operator, which markets, what volume. A single-market first customer is a materially easier V1.
+8. **Pricing** — per resolved conversation, per seat, or per volume. Changes what we must measure from day one.
 
 ---
 
-# Part 7 — Competitive context
+# Part 7 — What the competition claims
 
-Derived from a competitor's published sales guide (`Competitor.pdf`, 7pp). Sales collateral — every figure is self-reported and unaudited. Treat as a statement of **buyer expectation**, not of achieved engineering.
+From a competitor's published sales guide (`Competitor.pdf`, 7 pages). It's marketing, so every number is self-reported and unaudited. Treat it as **what buyers will expect**, not as proven engineering.
 
-| Their claim | Page | Our position |
+| Their claim | Page | Where we stand |
 |---|---|---|
-| 80–90% automation; 91% in a published case study | 3, 5 | Not matchable in V1 (read-only). Targeted in V2. |
-| 4.8+ CSAT | 3, 5 | Match in V1. |
-| Declarative, human-readable procedure workflows | 4 | **Match, and beat.** The architectural centre of gravity (§2.1). |
-| Preconditions block unsafe starts; forbidden actions | 4 | Match in V1 (FR-2, FR-3). |
-| RG monitoring on 100% of interactions | 4, 6 | **Match in V1. Non-negotiable** (FR-47). |
-| SOC2 Type II, PII masking, zero retention, no training on customer data | 4 | Posture in V1 (NFR-16, NFR-18); certified in V2 (NFR-25). |
-| 120+ languages | 6 | Match in V1 (FR-24). Their case study spans UK, DE, FR, NL, AU, IT, ES. |
-| Full audit logging | 4 | Match in V1 (NFR-22 – NFR-24). |
-| Back office, helpdesk, CRM, chat integrations; API-first | 4, 5 | V1, behind the adapter layer (FR-78). |
-| Proactive CRM: churn prevention, milestone bonuses, RG flagging | 6 | V3 (FR-67 – FR-71). |
-| Support insights feeding product and UX teams | 6 | V2 (FR-92). |
+| 80–90% automated; 91% in a case study | 3, 5 | Not reachable in V1 with read-only. Targeted in V2. |
+| Satisfaction 4.8+ | 3, 5 | Match in V1. |
+| Written, human-readable procedures | 4 | **Match, and go further.** This is the heart of our design (§2.1). |
+| Checks before starting; forbidden actions | 4 | Match in V1 (FR-2, FR-3). |
+| Gambling-harm monitoring on 100% of conversations | 4, 6 | **Match in V1. Non-negotiable** (FR-47). |
+| SOC 2, data masking, nothing retained or trained on | 4 | Posture in V1 (NFR-16, NFR-18); certified in V2 (NFR-25). |
+| 120+ languages | 6 | Match in V1 (FR-24). Their case study covers UK, Germany, France, Netherlands, Australia, Italy, Spain. |
+| Complete audit logging | 4 | Match in V1 (NFR-22 – NFR-24). |
+| Connects to back offices, help desks, CRM, chat | 4, 5 | V1, behind the translation layer (FR-78). |
+| Proactive outreach and retention | 6 | V3 (FR-67 – FR-71). |
+| Support insights for product teams | 6 | V2 (FR-92). |
 
-**Their worked example** (p4), reproduced because it is our acceptance benchmark (FR-14) — *"Where Is My Deposit?"*: verify identity → query payment provider API → cross-reference CRM and back-office balance logs → determine status → explain timing *or* initiate refund *or* escalate to payments with context → log and update ticket.
+**Their worked example** (page 4) — reproduced because it's our benchmark (FR-14): *"Where Is My Deposit?"* — check identity → query the payment provider → cross-reference the CRM and back-office balance → work out the status → explain the timing, start a refund, or escalate to payments with the context → log it and update the ticket.
 
-**The gap we are aiming at:** the competitor competes on action execution and compliance guardrails, not on conversation quality or context depth. Their guide says nothing about answer accuracy, retrieval grounding, emotional handling, or how procedures are validated.
+**The gap we're aiming at:** they compete on taking action and on compliance guardrails. Their guide says nothing about how accurate the answers are, how they're grounded in real content, how emotion is handled, or how a procedure is validated before it goes live.
+
+---
+
+# Glossary
+
+| Term | Meaning |
+|---|---|
+| **Back office** | The operator's internal system holding player accounts, balances, payments, and bonuses |
+| **Capability** | One specific question we can ask an operator's systems (e.g. "list recent deposits"). Operators support different sets |
+| **Cooling-off** | A voluntary short break from gambling that a player has set |
+| **Escalate / hand over** | Give the conversation to a human, with context |
+| **KYC** | "Know Your Customer" — the identity and document checks gambling operators are legally required to run |
+| **AML** | Anti-money-laundering checks, including questions about where a player's money came from |
+| **Inducement** | Wording that encourages someone to gamble more. Regulated, and in some markets restricted or banned |
+| **Operator** | A gambling company — our customer |
+| **Player** | The operator's customer — the person in the conversation |
+| **Procedure** | A written, versioned document describing how the agent handles one kind of question |
+| **Rehearsal (dry run)** | Running a procedure against real conversations and recording what it *would* have said, without sending |
+| **RG** | Responsible gambling — protecting players from gambling harm. A legal duty, not a courtesy |
+| **Self-exclusion** | A player formally barring themselves from gambling, often across a whole market |
+| **Wagering progress** | How much of a bonus's play-through requirement a player has completed before they can withdraw |
+| **V1 / V2 / V3** | The first, second, and third planned releases |
+| **MUST / SHOULD** | MUST = doesn't ship without it. SHOULD = strong default, tradeable |
+| **FR-n / NFR-n** | Permanent requirement IDs. FR = what it does, NFR = how well. IDs never change |
+
+---
+
+**Source:** `Competitor.pdf` — a competitor's published guide, *"AI Agents for Customer Support in iGaming."* 7 pages. Sales material; all figures self-reported and unaudited. Page references above point to it.
+
+**Companion:** `Design.md` — the technical design, which refers back to the requirement IDs used here.
