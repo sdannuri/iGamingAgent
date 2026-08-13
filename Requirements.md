@@ -2,8 +2,6 @@
 
 **Draft v0.1 · 7 August 2026**
 
-Derived from competitive analysis of Cevro AI's *"AI Agents for Customer Support in iGaming"* (`Competitor.pdf`, 7pp) and constrained by the integration realities in `Intercom-Custom-AI-Agent-Integration.md`.
-
 ---
 
 ## 1. Product definition
@@ -14,7 +12,7 @@ A **multi-tenant SaaS AI support agent for iGaming operators**. Operators connec
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| Tenancy | **Multi-tenant SaaS** | Public OAuth app, per-tenant config and credentials, tenant isolation, self-serve onboarding. Substantially larger build than single-workspace. |
+| Tenancy | **Multi-tenant SaaS** | Per-tenant config and credentials, tenant isolation, self-serve onboarding. Substantially larger build than single-tenant. |
 | v1 agent authority | **Read + answer only** | Agent reads player state and answers. No writes to operator systems. |
 | Channels / helpdesks | **Deferred** | Requirements below are written channel-agnostic. A channel abstraction is assumed; its shape is the next discussion. |
 
@@ -127,7 +125,7 @@ Derived from the contact types the competitor names as high-volume (p3, p4, p5).
 
 **FR-12** — Support 120+ languages, matching the competitor claim. Detect language per conversation and respond in kind. Approved fixed copy (RG, disclosure, escalation) MUST be human-translated per supported market, never machine-translated at runtime.
 
-**FR-13** — Handover to a human MUST be sticky. Once a human replies, the agent does not resume unless a human explicitly hands back. *(This is the single most damaging failure mode; see the integration doc §8.2.)*
+**FR-13** — Handover to a human MUST be sticky. Once a human replies, the agent does not resume unless a human explicitly hands back. *(An agent that reappears mid-human-conversation is the most damaging behavioural failure available to this design.)*
 
 **FR-14** — Escalation MUST carry structured context to the human: player identity, what the agent read, what it concluded, why it escalated, and the full transcript.
 
@@ -278,5 +276,3 @@ Set against read-only authority. These are not Cevro's numbers, and should not b
 ## Appendix: source
 
 `Competitor.pdf` — Cevro AI, *"AI Agents for Customer Support in iGaming: A Guide for Evaluating Agentic CX Automation."* 7 pages. Sales collateral; all figures self-reported and unaudited. Page references above are to that document.
-
-`Intercom-Custom-AI-Agent-Integration.md` — internal feasibility study; source of the integration constraints in §8 and the handover/kill-switch requirements.
