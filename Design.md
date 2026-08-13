@@ -1,137 +1,249 @@
 # IGamingSupportAgent — Design Document
 
-**Draft v1.0 · 13 August 2026**
-
-Technical design for a multi-tenant SaaS AI support agent for iGaming operators.
-
-**Companion document:** `Requirements.md` v0.2. Every design decision here traces to an `FR-` or `NFR-` identifier in that document. Where this design diverges or adds detail, it says so explicitly.
+**Draft v3.0 · 14 August 2026**
 
 ---
 
-## Table of contents
+## Contents
 
 | Part | Section |
 |---|---|
-| 1 | Scope and design principles |
-| 2 | System architecture |
-| 3 | Request lifecycle |
-| 4 | Safety gates |
-| 5 | Procedure engine |
-| 6 | Connector layer |
-| 7 | Knowledge and retrieval |
-| 8 | **Model strategy — which model does what** |
-| 9 | Multi-tenancy and isolation |
-| 10 | State and data model |
-| 11 | Observability |
-| 12 | Cost model |
-| 13 | Forward compatibility (V2, V3) |
-| 14 | Risks |
-| 15 | Competitive landscape and references |
+| **1** | **Objective** — what we are building and what it must achieve |
+| **2** | **Context** — the problem, the domain, the constraints |
+| **3** | **High-level design** — principles, architecture, flow |
+| **4** | **Component details** — every component, one section each |
+| 5 | Cross-cutting concerns |
+| 6 | Cost model |
+| 7 | Risks |
+| 8 | Rollout |
+| — | Appendix: glossary, references, open questions |
+
+This document is self-contained. Each component states the requirements it satisfies in full, rather than referring to a requirement register.
 
 ---
 
-# Part 1 — Scope and design principles
+# Part 1 — Objective
 
-## 1.1 What this design builds
+## 1.1 What this system is
 
-| Decision | Choice | Traces to |
+A multi-tenant SaaS platform that answers customer support conversations for online gambling operators, using live data from each operator's own systems, and hands conversations to humans when it should not answer.
+
+An operator connects their help desk and their back office. A player asks a question. The system identifies the player, reads their actual account, answers from that data, and records everything it did.
+
+## 1.2 What it must achieve
+
+| Objective | Measure | Phase |
 |---|---|---|
-| Tenancy | Multi-tenant SaaS | Requirements §1.1 |
-| V1 authority | Read and answer only; no writes to operator systems | Requirements §1.1 |
-| Channels | Abstracted behind an adapter layer; specific channels deferred | FR-78 |
-| Control flow | Deterministic procedure engine; model classifies and phrases | §1.2 below |
+| Resolve informational contacts without a human | 35–50% of conversations | V1 |
+| Give humans a running start on everything else | +25% of conversations resolved faster because the agent gathered context | V1 |
+| Answer accurately about a player's own account | Under 0.5% wrong-answer rate | V1 |
+| Respond faster than any human queue | Under 3 s to first response, under 8 s to a substantive answer | V1 |
+| Match human satisfaction | 4.5+ CSAT, rising to 4.8+ | V1 → V2 |
+| Resolve contacts end to end, including the action | 70–85% of conversations | V2 |
+| Prevent contacts before they happen | Measurable reduction in matching inbound volume | V3 |
+| Cost an order of magnitude less than a human contact | ~$0.10–0.13 per conversation against a $3–5 human baseline | All |
 
-## 1.2 Three principles
+## 1.3 What it must never do
 
-**P1 — The procedure decides what happens; the model decides what it says.**
+These are absolute. Each one is a licence, legal, or business-ending event, and the design treats them as structural properties rather than behaviours to be encouraged.
 
-The model never chooses to touch player data. A procedure selects the reads, the engine executes them, and the model is handed a fixed set of facts to phrase. This makes preconditions provable rather than promised, and it is the sentence that satisfies a compliance officer.
+| Never | Why |
+|---|---|
+| Show one operator's player data to another operator | Ends the company |
+| Generate free text on a responsible-gambling, complaint, legal, or AML topic | Licence event; regulated wording only |
+| Miss a problem-gambling signal | Statutory duty of care |
+| Speak into a conversation a human has taken over | The most damaging behavioural failure available to us |
+| Disclose account details without verifying identity | Data-protection incident |
+| Invent a fact about someone's money | Unrecoverable — sent messages cannot be edited |
+| Execute the same money-moving action twice *(V2)* | Financial harm, and unlike a duplicate message it cannot be apologised away |
+| Send an unsolicited message to a self-excluded player *(V3)* | Catastrophic. Correct wording is no defence |
 
-**P2 — Safety gates live outside the procedure engine.**
+## 1.4 Scope by phase
 
-RG screening, emotional assessment, and always-escalate detection run in the pipeline, before procedure selection. If they were procedure *steps*, an unauthored path would silently drop coverage — and FR-47 requires 100%. A post-gate validates every outbound message before it reaches a player.
+```mermaid
+graph LR
+    V1["<b>V1 — Read and answer</b><br/>Reads player data, answers,<br/>escalates cleanly.<br/>Changes nothing.<br/><i>Dominant risk: wrong answer</i>"]
+    V2["<b>V2 — Act and assist</b><br/>Executes bounded actions.<br/>Suggests replies to humans.<br/><i>Dominant risk: wrong transaction</i>"]
+    V3["<b>V3 — Reach out and talk</b><br/>Initiates contact.<br/>Handles voice.<br/><i>Dominant risk: wrong recipient</i>"]
 
-**P3 — Connectors are capability contracts, not integrations.**
+    V1 -->|"accuracy gate,<br/>not a date"| V2 --> V3
 
-Each read step is backed by a declared capability. A tenant's connector implements what that operator can actually supply; procedures declare what they require; unmet capabilities disable the procedure for that tenant rather than failing mid-conversation.
+    style V1 fill:#2980b9,color:#fff
+    style V2 fill:#8e44ad,color:#fff
+    style V3 fill:#c0392b,color:#fff
+```
+
+The dominant risk changes character at each boundary. That, more than the feature list, is what shapes the design.
 
 ---
 
-# Part 2 — System architecture
+# Part 2 — Context
 
-## 2.1 Component overview
+## 2.1 The problem
+
+Gambling operators handle very large support volumes — a mid-size operator runs 80,000–100,000 live chats a month across several markets and languages. The volume concentrates in a small number of repeated operational questions: where is my deposit, where is my withdrawal, why is my account not verified, where is my bonus, why can't I log in.
+
+These are not information requests. They are questions about the state of a specific person's money, and they can only be answered by reading that person's account. A chatbot that recites the bonus terms is useless; the player wants to know how much further *they* have to wager.
+
+Answering them requires three things a general-purpose assistant does not have: a live connection to the operator's back office, a way to be certain who the player is, and a set of rules about what may be said to whom.
+
+## 2.2 What makes iGaming different
+
+Five domain properties drive most of the design.
+
+**It is licensed.** Operators hold gambling licences with conditions attached. Some conditions govern what may be said — wording that encourages further play is restricted or banned in several markets. Some govern what must happen — a self-exclusion request has statutory handling. A support agent that breaches these does not cause a bad review; it causes a regulatory event.
+
+**Duty of care is a legal obligation, not a courtesy.** Operators must monitor for gambling harm and act on it. Any system in the conversation path inherits that obligation. Screening cannot be a feature that works most of the time.
+
+**Distress hides inside ordinary questions.** A message about a missing deposit can carry a signal of gambling harm. Screening therefore cannot be attached to particular topics; it must run on everything.
+
+**Frustration is the baseline.** Players contact support because money is missing. A large share of inbound is already annoyed. Any design that escalates on frustration escalates most of its volume — and often makes things worse, because for many questions an accurate answer in three seconds beats a twenty-minute queue.
+
+**Mistakes are permanent.** Chat messages cannot be recalled. A wrong answer about a withdrawal is visible, quotable, and complainable.
+
+## 2.3 The competitive landscape
+
+The category is established and contested. Research on the current market:
+
+| Vendor | Positioning |
+|---|---|
+| **Cevro AI** | The benchmark. "AI Procedures" — structured, human-readable workflows translating operator SOPs into machine-executable procedures, binding live data with compliance guardrails and deterministic logic. Claims 80–90% end-to-end resolution, CSAT 4.8/5, 40% workload reduction. Reports one operator live across three platforms in three weeks, 65% automation by end of month one, 82% by week six |
+| **BetHarmony** (Symphony Solutions) | Multilingual iGaming agent for sportsbook and casino; claims 50–70% workload reduction with compliance and audit trails |
+| **Lorikeet** | Claims end-to-end resolution of regulated player-service contacts — deposits, withdrawals, KYC, source of funds, bonus and bet disputes, RG escalations — across chat, email, voice, SMS, WhatsApp |
+| **Ada** | Conversational AI for gaming with an explicit RG posture: detects distress and self-exclusion signals, escalates deterministically to trained humans |
+| **Zendesk** | Horizontal help desk with an iGaming vertical |
+| **Slotegrator, Avenga** | Adjacent — payment automation, KYC/AML, fraud and risk |
+
+**What this tells us.** The declarative-procedure architecture is category-defining, not novel — the benchmark competitor markets exactly this. Deterministic RG escalation is an expectation, not a differentiator. Pre-built integrations are the stated onboarding accelerant, and months of custom API work is what buyers fear.
+
+**Where we can actually differentiate** (§3.1 and §4.6 build these in):
+
+1. **Provability, not assertion.** Being able to prove no conversation path discloses account data without an identity check — as a static property of the procedure, not a test result.
+2. **Graduated emotional handling**, with distress separated from frustration, calibrated per market.
+3. **Capability degradation as a feature.** "You get six of nine procedures, and here is exactly why" beats a failed integration.
+4. **A real V2 safety envelope.** Idempotency, outcome verification, and dual control are where an action-taking agent in a money business lives or dies, and are conspicuously absent from competitor marketing.
+
+**The uncomfortable part.** A read-only V1 concedes the category's headline claim — *"chatbots answer, agents act."* V1 must win on accuracy, compliance posture, and handover quality, and V2 must land.
+
+## 2.4 Key constraints
+
+| Constraint | Consequence |
+|---|---|
+| **Multi-tenant** | Every operator's data walled off from every other's; per-tenant configuration, credentials, and self-service setup. Substantially larger than a single-operator build |
+| **V1 changes nothing** | Lower risk, faster to ship, but the automation ceiling is set by what can be answered without acting |
+| **Channels not yet chosen** | Everything sits behind an adapter layer so the choice slots in later |
+| **Operator systems vary widely** | We cannot assume any particular back office can answer any particular question |
+| **Data residency** | Player conversation data may not be able to leave its jurisdiction |
+| **Latency is user-visible** | A player is watching a chat window; the budget is seconds, not minutes |
+
+## 2.5 Phase strategy
+
+**V2 does not start on a date.** It starts when V1 has demonstrated: wrong-answer rate below 0.5% sustained, zero occurrences of generated text on a forbidden topic, zero occurrences of the agent talking over a human, and an audit trail that has survived a real compliance review.
+
+Actions are the point where a wrong answer becomes a wrong transaction. The accuracy bar is the gate.
+
+---
+
+# Part 3 — High-level design
+
+## 3.1 Design principles
+
+### P1 — The procedure decides what happens; the model decides what it says
+
+Support scenarios are written as **procedures**: declarative documents that name the steps, conditions, and constraints for handling one kind of question. The procedure decides which account data to read and in what order. The model does two narrower jobs — work out what the player is asking, and turn the facts the procedure fetched into a good sentence.
+
+The model is never given the ability to fetch data. At composition time it receives a template and a fixed list of facts. "Decide to look up someone's balance" is not an action available to it.
+
+**Why this matters:** identity-before-disclosure becomes a property you can prove by walking a finite graph, rather than a behaviour you sample-test. That proof is the artifact a regulator wants.
+
+### P2 — Safety checks live outside the procedure engine
+
+Screening for gambling harm, distress, abuse, and legally sensitive topics runs on every inbound message *before* a procedure is chosen, with authority to pre-empt everything downstream. A second check validates every outbound message before it reaches a player.
+
+**Why this matters:** if screening were a step inside a procedure, any procedure that omitted it would silently drop coverage. Coverage must be 100%, and the only way that holds is if it cannot be skipped by omission.
+
+### P3 — Connections to operator systems are capability contracts
+
+Each kind of lookup is a declared **capability** — a specific question we can ask an operator's systems. At onboarding we probe which capabilities that operator supports. Procedures declare what they need; unmet capabilities disable the procedure for that tenant and route those contacts to humans.
+
+**Why this matters:** we can build without knowing what any given back office can do, and a thin back office produces a smaller agent rather than a broken one.
+
+### P4 — Fail toward humans, never toward silence or a guess
+
+Every degraded path ends with a human holding the conversation and enough context to continue. No component is allowed to fail by inventing an answer, and none is allowed to fail by going quiet.
+
+## 3.2 Architecture
+
+Components are labelled by the phase that introduces them.
 
 ```mermaid
 graph TB
     subgraph EDGE["Edge"]
-        CA["Channel Adapter<br/>normalise inbound / render outbound"]
-        ING["Ingress<br/>verify · persist · ack fast"]
+        CA["Channel Adapter — V1<br/>Voice Adapter — V3"]
+        ING["Ingress"]
     end
 
-    subgraph CORE["Core pipeline"]
-        ORCH["Orchestrator<br/>dedupe · debounce · handover guard"]
-        PRE["Safety Pre-Gate<br/>RG · emotion · always-escalate"]
-        SEL["Procedure Selector<br/>intent to procedure + version"]
-        ENG["Procedure Engine<br/>preconditions · steps · branches"]
-        COMP["Composer<br/>facts to player-facing text"]
-        POST["Safety Post-Gate<br/>copy check · inducement · leak scan"]
-        WR["Writer<br/>idempotent send"]
+    subgraph CORE["Core pipeline — V1"]
+        ORCH["Orchestrator"]
+        PRE["Safety Pre-Gate"]
+        SEL["Procedure Selector"]
+        ENG["Procedure Engine"]
+        COMP["Composer"]
+        POST["Safety Post-Gate"]
+        WR["Writer"]
     end
 
-    subgraph SVC["Supporting services"]
-        MG["Model Gateway<br/>routing · caching · fallback · metering"]
-        CONN["Connector Layer<br/>capability contracts"]
-        KB["Knowledge Index<br/>per-tenant retrieval"]
-        CFG["Config Service<br/>tenant policy · kill switches"]
-        AUD["Audit Log<br/>append-only · immutable"]
-        REC["Reconciler<br/>periodic sweep"]
+    subgraph ACT["Action layer — V2"]
+        GRD["Guardrail Evaluator"]
+        APQ["Approval Queue"]
+        AEX["Action Executor"]
+        VER["Outcome Verifier"]
+        ALOG["Action Log"]
+        SUG["Suggestion Sink"]
+    end
+
+    subgraph PRO["Proactive layer — V3"]
+        SIG["Signal Ingestion"]
+        TRG["Trigger Evaluator"]
+        SUP["Suppression Gate"]
+    end
+
+    subgraph SVC["Shared services"]
+        MG["Model Gateway"]
+        CONN["Connector Layer"]
+        KB["Knowledge Index"]
+        CFG["Config Service"]
+        AUD["Audit Log"]
+        REC["Reconciler"]
     end
 
     CA --> ING --> ORCH --> PRE
-    PRE -->|"clear"| SEL --> ENG
-    PRE -->|"RG / abuse / always-escalate"| POST
+    PRE -->|clear| SEL --> ENG
+    PRE -->|"RG / abuse / escalate"| POST
     ENG --> COMP --> POST --> WR --> CA
+    ENG -.->|"human has taken over"| SUG
 
-    ENG -.-> CONN
-    ENG -.-> KB
+    ENG -->|"action step"| GRD
+    GRD -->|"within limits"| AEX
+    GRD -->|"above threshold"| APQ --> AEX
+    AEX --> VER --> COMP
+    AEX --> ALOG
+
+    SIG --> TRG --> SUP --> COMP
+
+    ENG -.-> CONN & KB
+    AEX -.-> CONN
     PRE -.-> MG
     COMP -.-> MG
     ORCH -.-> CFG
     REC -.-> CA
+    PRE & ENG & POST & WR & AEX & SUP -.-> AUD
 
-    PRE -.-> AUD
-    ENG -.-> AUD
-    POST -.-> AUD
-    WR -.-> AUD
+    style ACT fill:#f4ecf7
+    style PRO fill:#fdedec
 ```
 
-## 2.2 Component responsibilities
-
-| Component | Responsibility | Requirement |
-|---|---|---|
-| **Channel Adapter** | Normalise inbound events to a canonical `ConversationEvent`; render outbound per channel | FR-78 |
-| **Ingress** | Verify signature, persist raw event, enqueue, acknowledge fast | FR-79 |
-| **Orchestrator** | Dedupe, debounce, load tenant policy, enforce handover stickiness | FR-19, FR-36, FR-42 |
-| **Safety Pre-Gate** | RG screening, emotional band, abuse, always-escalate — authority to pre-empt | FR-26–35, FR-47–51 |
-| **Procedure Selector** | Map primary intent to procedure + version; check capability availability | FR-10, FR-13 |
-| **Procedure Engine** | Execute preconditions and steps; branch; record every step | FR-1–12 |
-| **Composer** | Turn step outputs into player-facing text under an approved template | FR-33 |
-| **Safety Post-Gate** | Validate outbound before send | FR-45 |
-| **Writer** | Idempotent send keyed to the triggering inbound message | FR-42 |
-| **Model Gateway** | Sole egress for model calls: routing, caching, timeouts, fallback, token metering | Part 8 |
-| **Connector Layer** | Capability-contracted access to operator systems | FR-10, FR-73 |
-| **Knowledge Index** | Per-tenant retrieval over operator content | FR-54–56 |
-| **Config Service** | Per-tenant policy, thresholds, copy, kill switches | FR-74, FR-76 |
-| **Audit Log** | Append-only record of every decision | NFR-22–24 |
-| **Reconciler** | Periodic sweep for missed events | FR-80 |
-
-**Why the Writer is separate:** it is the only component that mutates the player-visible world. Idempotency, rate limiting, and the kill switch belong at exactly one chokepoint.
-
----
-
-# Part 3 — Request lifecycle
-
-## 3.1 Happy path
+## 3.3 Request flow
 
 ```mermaid
 sequenceDiagram
@@ -140,91 +252,216 @@ sequenceDiagram
     participant CA as Channel Adapter
     participant OR as Orchestrator
     participant PG as Pre-Gate
-    participant EN as Procedure Engine
+    participant EN as Engine
     participant CN as Connector
     participant CO as Composer
     participant PO as Post-Gate
 
     P->>CA: "Where is my deposit?"
-    CA->>OR: ConversationEvent
-    OR->>OR: dedupe, debounce 2-4s, handover guard
+    CA->>OR: normalised event
+    OR->>OR: dedupe · debounce · handover guard
     OR->>PG: message + tenant policy
 
-    par Concurrent classification
-        PG->>PG: RG screen (Haiku + lexicon)
-        PG->>PG: intent + emotion + language (Haiku)
+    par Concurrent
+        PG->>PG: RG screen (patterns + small model)
+        PG->>PG: intent · emotion · language (same call)
     end
 
-    PG-->>EN: clear, intent=deposit_missing, band=mild
+    PG-->>EN: clear · intent=deposit_missing · band=mild
     EN->>EN: preconditions (identified, verified, not self-excluded)
 
     par Parallel reads
-        EN->>CN: read_transactions
-        EN->>CN: read_player_state
+        EN->>CN: read transactions
+        EN->>CN: read player state
     end
 
     CN-->>EN: facts
-    EN->>EN: branch on status
+    EN->>EN: branch on transaction status
     EN->>CO: template + facts + emotion band
     CO->>PO: candidate text
-    PO->>PO: locked-copy check, inducement scan, leak scan
+    PO->>PO: locked-copy · inducement · leak checks
     PO->>CA: approved text
     CA->>P: answer
 ```
 
-## 3.2 Pre-gate escalation path
+When the pre-gate fires, the engine never runs. That path is structural — there is no code route from pre-gate to composer that carries generated text.
 
-When the pre-gate fires, the procedure engine never runs. This is structural, not conditional — the code path from pre-gate to composer does not exist.
+## 3.4 Where models are used, and where they are deliberately not
 
-```mermaid
-graph LR
-    PG["Pre-Gate fires"] --> LC["Locked copy lookup<br/>intent × market × language"]
-    LC --> PO["Post-Gate<br/>verify copy is locked"]
-    PO --> SEND["Send to player"]
-    PG --> CTX["Context pack<br/>Haiku"]
-    CTX --> ESC["Escalate to human"]
+| Uses a model | Uses no model |
+|---|---|
+| Understanding the message (intent, emotion, RG risk, abuse, confidence) | Procedure control flow and branching |
+| Turning fetched facts into a sentence | Precondition evaluation |
+| Verifying an answer is grounded in source content | Selecting approved fixed wording |
+| Scanning outbound text for promotional language | Binding action parameters *(V2)* |
+| Summarising context for a human | Evaluating ceilings and caps *(V2)* |
+| Judging quality offline | Evaluating suppression and permission *(V3)* |
 
-    style PG fill:#c0392b,color:#fff
-    style LC fill:#e67e22,color:#fff
-```
+**The right-hand column is the more important one.** A model never decides that a refund should happen or how much it should be — the procedure does, from data the engine already fetched. A model never decides that a player may be contacted. Those are exactly the decisions where a probabilistic answer is indefensible.
 
-**Zero generated text reaches the player on this path** (FR-51). The only model call is the human-facing context pack.
+## 3.5 Component map
+
+| Component | Phase | One-line purpose |
+|---|---|---|
+| Channel Adapter | V1 | Translate between a channel and our canonical event format |
+| Ingress | V1 | Accept, verify, persist, acknowledge fast |
+| Orchestrator | V1 | Dedupe, debounce, load policy, enforce handover |
+| Safety Pre-Gate | V1 | Screen every message; pre-empt when needed |
+| Procedure Selector | V1 | Choose the procedure and version |
+| Procedure Engine | V1 | Execute the procedure step by step |
+| Connector Layer | V1 / V2 | Capability-contracted access to operator systems |
+| Knowledge Index | V1 | Per-tenant search over operator content |
+| Composer | V1 | Facts + template → player-facing text |
+| Safety Post-Gate | V1 | Validate every outbound message |
+| Writer | V1 | Send exactly once |
+| Model Gateway | V1 | Single egress for all model calls |
+| Config Service | V1 | Per-tenant policy and kill switches |
+| Audit Log | V1 | Immutable record of every decision |
+| Reconciler | V1 | Catch what the channel dropped |
+| Guardrail Evaluator | V2 | Enforce authority, ceilings, caps |
+| Approval Queue | V2 | Human sign-off above threshold |
+| Action Executor | V2 | Execute actions exactly once |
+| Outcome Verifier | V2 | Confirm the action actually happened |
+| Action Log | V2 | Separate immutable financial record |
+| Suggestion Sink | V2 | Route drafts to human agents |
+| Signal Ingestion | V3 | Take behavioural signals from the operator |
+| Trigger Evaluator | V3 | Decide which outreach plays match a player |
+| Suppression Gate | V3 | Decide whether a player may be contacted at all |
+| Voice Adapter | V3 | Speech in, speech out, same pipeline |
 
 ---
 
-# Part 4 — Safety gates
+# Part 4 — Component details
 
-## 4.1 Pre-gate: order of authority
+Each component below states its purpose, the requirements it must satisfy, its design, its interface, and how it behaves when things go wrong.
 
-Evaluated on every inbound message, before anything else. Order matters — a distressed player often *reads* as frustrated, and routing them to the general queue instead of the RG path is the failure that costs a licence.
+---
 
-| Priority | Check | Action | Requirement |
+## 4.1 Channel Adapter
+
+**Purpose.** Translate between a specific chat channel and the one internal format the rest of the system understands.
+
+**Requirements**
+
+- Convert inbound messages from any channel into a single canonical event, and render outbound messages appropriately for each channel.
+- Assume a sent message cannot be edited or deleted. Treat every send as final.
+- Where a channel has no "typing…" indicator, emit an immediate acknowledgement so the player is not left watching nothing.
+- Surface channel capabilities (buttons, attachments, formatting) so the composer can use them where present and degrade gracefully where absent.
+
+**Design.** One adapter per channel, all implementing the same two-way interface. Inbound produces a `ConversationEvent`; outbound accepts an approved message and channel hints. Everything channel-specific stops here — no other component knows which channel a conversation is on, except the voice adapter's latency flag (§4.25).
+
+**Interface**
+
+```
+inbound(raw_channel_payload) -> ConversationEvent
+outbound(approved_message, channel_hints) -> DeliveryReceipt
+capabilities() -> {buttons, attachments, typing_indicator, max_length}
+```
+
+**Failure behaviour.** A malformed inbound payload is persisted raw and dropped from processing with an alert — never guessed at. A failed outbound send returns to the Writer for its retry logic; the adapter itself never retries, so the send-exactly-once guarantee has one owner.
+
+---
+
+## 4.2 Ingress
+
+**Purpose.** Accept inbound events fast enough that the channel does not time out, and never lose one.
+
+**Requirements**
+
+- Verify the event is authentic before accepting it.
+- Acknowledge quickly and process asynchronously — inference takes longer than most channels will wait.
+- Persist the raw event before doing anything else.
+- Never lose a player message, including during a partial outage.
+
+**Design.** Verify signature, write the raw payload to durable storage, enqueue, return an acknowledgement. Nothing else. The acknowledgement path does no lookups, no model calls, and no policy evaluation, so its latency is bounded by a single write.
+
+**Interface**
+
+```
+accept(signed_payload) -> Ack        target: under 100 ms
+```
+
+**Failure behaviour.** If persistence fails, the ingress does *not* acknowledge — better that the channel retries than that we silently drop a message. Downstream failures never surface as a non-acknowledgement, because a channel that sees repeated failures will disable the integration.
+
+---
+
+## 4.3 Orchestrator
+
+**Purpose.** Decide whether this message should be processed at all, and assemble the context needed to process it.
+
+**Requirements**
+
+- Never process the same message twice.
+- Wait briefly for players who send three short messages instead of one long one, then answer once.
+- **Once a human replies, stop permanently.** Only an explicit human hand-back returns the conversation to the agent.
+- Cap how many times the agent replies in one conversation; at the cap, hand over rather than continue.
+- Track conversation state: status, last message handled, replies sent, topic, confidence, emotional trend, reason for handover.
+
+**Design.** A short state machine per conversation plus a debounce window of 2–4 seconds. Handover is a **one-way transition** — the state machine has no automatic path out of `handed_over`, so the "never talk over a human" guarantee is structural rather than a check that could be missed.
+
+```
+active ──human replies──▶ handed_over ──explicit hand-back──▶ active
+  │                                                              
+  ├──kill switch / RG policy──▶ suppressed
+  └──closed──▶ closed
+```
+
+Loads tenant policy from the Config Service and attaches it to the event, so no downstream component reads configuration independently and they cannot disagree about it.
+
+**Interface**
+
+```
+process(ConversationEvent) -> EnrichedEvent | Dropped(reason)
+```
+
+**Failure behaviour.** If conversation state cannot be loaded, the message escalates. Processing without knowing whether a human is already handling the conversation is not an acceptable degraded mode.
+
+---
+
+## 4.4 Safety Pre-Gate
+
+**Purpose.** Screen every inbound message and, where necessary, stop everything downstream before it runs.
+
+**Requirements**
+
+- **Screen 100% of inbound messages** for distress and problem-gambling signals, regardless of what the message is about.
+- Screening must be part of the pipeline, not a procedure step, so no procedure can skip it by omission.
+- On any gambling-harm signal: send operator-approved wording for that market and escalate immediately to a trained human. **No generated text.**
+- Maintain a per-tenant always-escalate topic list, defaulting to: responsible gambling and self-exclusion, account closure, complaints and disputes, AML and source of funds, chargebacks, legal threats, safeguarding, and anything involving money being paid back. **Not one generated word reaches the player on these topics.**
+- Assess emotional state on every message before acting.
+- Escalate rather than answer when confidence is below the tenant's threshold.
+- Escalate immediately when a player asks for a human, with no deflection attempt.
+- Complete in under 400 ms.
+
+**Design — order of authority.** Evaluated in this order, and the order is load-bearing.
+
+| Priority | Check | On trigger | Cost |
 |---|---|---|---|
-| 1 | Kill switch (tenant or global) | Escalate immediately; keep ingesting and logging | FR-76 |
-| 2 | Conversation state: closed, handed over, suppressed | Decline | FR-36 |
-| 3 | Self-excluded / cooling-off (from identity resolution) | Distinct RG policy — never a standard flow | FR-17 |
-| 4 | **RG / distress signal** | Locked copy + trained human. **Pre-empts everything below.** | FR-47–49 |
-| 5 | Abuse or threat | Distinct policy, flagged | FR-29 |
-| 6 | Always-escalate intent set | Locked acknowledgement copy + escalate | FR-50, FR-51 |
-| 7 | Explicit request for a human | Immediate escalation, no deflection | FR-38 |
-| 8 | Auto-reply ceiling reached | Escalate | FR-40 |
-| 9 | Emotional band | Modulate (see 4.2) | FR-27 |
-| 10 | Confidence below threshold | Escalate | FR-22 |
+| 1 | Kill switch (tenant or global) | Escalate; keep ingesting and logging | free |
+| 2 | Conversation closed, handed over, or suppressed | Decline | free |
+| 3 | Player self-excluded or in cooling-off | Distinct protective policy | 1 lookup |
+| 4 | **Gambling-harm or distress signal** | Approved wording + trained human. **Pre-empts everything below** | shared model call |
+| 5 | Abuse or threat | Distinct policy, flagged | shared model call |
+| 6 | Always-escalate topic | Approved acknowledgement + escalate | shared model call |
+| 7 | Explicit request for a human | Immediate escalation | free |
+| 8 | Reply ceiling reached | Escalate | free |
+| 9 | Emotional band | Modulate behaviour (below) | shared model call |
+| 10 | Confidence below threshold | Escalate | free |
 
-Checks 1–3 and 7–8 are deterministic and cost nothing. Only 4–6 and 9–10 consume model tokens, and they share a single call (Part 8).
+**Why RG outranks emotion.** A distressed player frequently reads as frustrated. Routing them to the ordinary support queue instead of the RG path is the failure that costs a licence, so gambling-harm detection pre-empts emotional routing unconditionally.
 
-## 4.2 Emotional band routing
+**Design — two-layer screening.** A deterministic multilingual pattern layer runs alongside the model classification, and the results are **OR-ed, never AND-ed**. Either layer firing is sufficient. This is what makes 100% coverage robust to a model regression or an outage.
 
-Emotion modulates behaviour across five bands rather than acting as a binary switch. In iGaming, mild frustration is the baseline — a binary "frustrated → human" rule escalates most inbound volume and destroys the automation rate, and an accurate instant answer is often the fastest de-escalation available.
+**Design — emotional bands.** Five bands, not a binary switch, because in this domain mild frustration is the norm and a binary rule would escalate most of the volume.
 
 ```mermaid
 graph TD
     M["Inbound message"] --> C{"Emotional<br/>assessment"}
-    C -->|"Distress / RG"| RG["RG lane<br/>locked copy + trained human<br/>NEVER general queue"]
-    C -->|"Abuse / threat"| AB["Abuse policy<br/>flagged escalation"]
-    C -->|"High frustration"| HF{"High confidence<br/>AND answerable<br/>this turn?"}
-    C -->|"Mild frustration"| MF["Proceed<br/>tone: answer-first, no pleasantries"]
-    C -->|"Neutral"| NE["Proceed<br/>normal tone"]
+    C -->|"Distress / gambling harm"| RG["RG lane<br/>approved wording + trained human<br/>NEVER the general queue"]
+    C -->|"Abuse or threat"| AB["Abuse policy<br/>flagged escalation"]
+    C -->|"High frustration"| HF{"Confident AND<br/>answerable this turn?"}
+    C -->|"Mild frustration"| MF["Proceed — tone shifts:<br/>answer first, no pleasantries"]
+    C -->|"Neutral"| NE["Proceed normally"]
 
     HF -->|yes| MF
     HF -->|no| ESC["Escalate"]
@@ -233,36 +470,67 @@ graph TD
     style AB fill:#c0392b,color:#fff
 ```
 
-Two signals matter more than the absolute band:
+Two signals matter more than the absolute reading:
 
-- **Trajectory** (FR-30) — a rising slope across turns predicts "a human should take this" better than any single reading. A calm third contact about the same deposit outranks one angry first contact.
-- **Availability** (FR-32) — escalating into an empty queue at 3am produces silence, the exact failure we are designing against. The router reads staffing state and, where no human is on shift, attempts the answer with honest disclosure of the wait.
+- **Trajectory.** Whether someone is getting *more* upset across turns predicts "a human should take this" better than any single measurement. A calm third contact about the same unresolved deposit outranks one angry first contact.
+- **Availability.** Escalating at 3am when nobody is on shift produces silence — the exact failure we design against. The router reads staffing state and, where no human is available, attempts the answer with honest disclosure of the wait.
 
-The band also reaches the Composer (FR-33). Detecting frustration and replying in default chirpy voice is worse than not detecting it.
+The band also reaches the Composer. Detecting frustration and then replying cheerfully is worse than not detecting it.
 
-**Calibration risk:** sentiment models degrade badly outside English, and ordinary directness in German or Dutch reads as anger to a model trained on English politeness norms. Thresholds are per-tenant *and per-market* (FR-34), with per-language accuracy monitoring (FR-35).
+**Calibration.** Emotion detection degrades badly outside English, and ordinary directness in German or Dutch reads as anger to a model trained on English politeness norms. Thresholds are configured per tenant **and per market**, with per-language accuracy monitored and alerted on.
 
-## 4.3 Post-gate
+**Interface**
 
-Cheap, and it is how "always-escalate leakage = 0" actually holds. Runs on every outbound message.
+```
+screen(EnrichedEvent) -> Clear(classification) | Preempt(reason, locked_copy_key, escalation_target)
+```
 
-| Check | Method |
-|---|---|
-| Locked copy verifiably came from the approved copy store | Hash comparison, deterministic |
-| No inducement or promotional language | Deterministic pattern list + Haiku classifier |
-| No other player's data present | Deterministic scan against the resolved player's identifiers |
-| No unresolved template placeholders | Deterministic |
-| Output sanitised | Deterministic |
-
-Belt and braces on the one class of failure that is unrecoverable, since sent messages cannot be edited or deleted (FR-43).
+**Failure behaviour.** If the model call fails, the deterministic layer still runs and the conversation escalates. **The gate never passes a message through unclassified.**
 
 ---
 
-# Part 5 — Procedure engine
+## 4.5 Procedure Selector
 
-## 5.1 Format
+**Purpose.** Choose which procedure handles this message, at which version.
 
-Declarative YAML — versioned, diffable, authored by CS leads and compliance rather than engineers (FR-1, NFR-29). The document names steps, conditions and constraints; it contains no retries, error handling, logging, auth, or rate limiting. The engine supplies all of that uniformly.
+**Requirements**
+
+- Map the classified topic to a procedure, honouring the tenant's own procedures over the shared baseline.
+- Where a player asks two things at once, handle each properly rather than answering one and dropping the other.
+- Where a procedure requires a capability the tenant's systems cannot supply, do not select it — route to a human instead.
+
+**Design.** Primary topic selects the procedure. A **secondary topic is carried into the response step** so the answer can acknowledge it, and is logged. If the secondary topic is on the always-escalate list, it wins over the primary.
+
+Procedure runs are scoped to **one question, not one conversation**. A conversation holds a stack of short-lived runs. This costs more state and handles how people actually write.
+
+Version is pinned at selection time, so a procedure edit mid-conversation does not change behaviour halfway through.
+
+**Interface**
+
+```
+select(classification, tenant_policy) -> ProcedureRun(name, version) | NoProcedure(reason)
+```
+
+**Failure behaviour.** No matching procedure routes to the general-information path (§4.8) if the question does not touch the account, and to a human if it does.
+
+---
+
+## 4.6 Procedure Engine
+
+**Purpose.** Execute a procedure step by step, deterministically, recording everything.
+
+**Requirements**
+
+- Procedures are documents, not code — writable and reviewable by CS leads and compliance officers, versioned, and comparable side by side.
+- Each procedure states: its triggers, its preconditions, its ordered steps, its forbidden actions, its escalation rules, what must be disclosed to the player, what player data it may touch, and which operator capabilities it needs.
+- If a precondition fails, route to a defined fallback. **Never proceed on a guess.**
+- The full step vocabulary — including action steps — exists from the first release, with execution controlled by settings.
+- A procedure using a disabled step type fails when it is written, with a clear message, never at runtime in front of a player.
+- Record every step: inputs, outputs, duration, decision, and the procedure version in force.
+- Support a rehearsal mode that runs against real conversations and records what would have been said, without sending.
+- Tenants can write new procedures without our engineers.
+
+**Design — format.** Declarative YAML. The document names steps and constraints; it contains no retries, error handling, logging, authentication, or rate limiting. The engine supplies all of that uniformly for every procedure — which is exactly what makes a non-engineer able to write one.
 
 ```yaml
 procedure: where_is_my_deposit
@@ -284,7 +552,7 @@ preconditions:
 
 forbidden:
   - generate_text_about: [refund_promise, timing_guarantee]
-  - steps: [trigger_refund]          # V1: writes disabled globally AND here
+  - steps: [trigger_refund]
 
 steps:
   - id: fetch
@@ -315,213 +583,309 @@ escalation:
   include_context: [transcript, facts_read, conclusion, confidence, emotion_trajectory]
 
 disclosure:
-  - automated_agent          # first message of conversation
+  - automated_agent
 
 data_classification:
   reads: [transaction_history, balance]
   never_reads: [payment_instrument_full, source_of_funds_docs]
 ```
 
-## 5.2 Execution model
+**Design — step vocabulary.**
 
-```mermaid
-stateDiagram-v2
-    [*] --> Selected: intent matches trigger
-    Selected --> CapabilityCheck
-    CapabilityCheck --> Disabled: capability missing
-    CapabilityCheck --> Preconditions: all available
-    Preconditions --> Fallback: any fails
-    Preconditions --> Executing: all hold
-    Executing --> Executing: next step
-    Executing --> Composing: respond step
-    Executing --> Escalated: escalate step
-    Executing --> Fallback: step error
-    Composing --> PostGate
-    PostGate --> Sent
-    Disabled --> Escalated
-    Fallback --> Escalated
-    Sent --> [*]
-    Escalated --> [*]
-```
+| Group | Steps | Enabled |
+|---|---|---|
+| Identity | `verify_identity` | V1 |
+| Read | `read_player_state`, `read_transactions`, `read_kyc_status`, `read_bonus_state`, `read_limits`, `read_knowledge` | V1 |
+| Control | `classify`, `branch`, `wait`, `respond`, `escalate`, `log` | V1 |
+| Action | `issue_bonus`, `trigger_refund`, `resend_verification`, `update_ticket`, `apply_limit`, `reset_credential`, `close_account` | Defined V1, executable V2 |
 
-**Procedure runs are scoped to a turn-cluster, not a conversation** (FR-9). Players ask two things at once — "where's my deposit, and why can't I withdraw?" The conversation holds a stack of short-lived runs. Costs more state, handles reality.
+**Design — author-time validation.** Because a procedure is declarative, these are provable before anything runs:
 
-## 5.3 Author-time validation
-
-Because the procedure is declarative, these are provable before anything runs (FR-5):
-
-| Check | Type |
+| Check | Kind |
 |---|---|
 | Every branch case has a destination | Graph completeness |
 | Every referenced capability is declared and available for this tenant | Contract |
 | No forbidden step appears in the step list | Set membership |
-| Every `respond` template has approved copy in every language the tenant supports | Coverage |
-| **No path reaches a `respond` step that discloses account data without passing `verify_identity`** | **Reachability** |
+| Every response template has approved wording in every language the tenant supports | Coverage |
+| **No path reaches a response step disclosing account data without passing `verify_identity` first** | **Reachability** |
+| *(V2)* Every action step declares a compensating action or requires approval | Completeness |
+| *(V2)* Every action step's ceiling is within the tenant's authority grant | Bounds |
 
-The last one is the load-bearing check. It is a graph property you can *prove* over a declarative document. You cannot prove it about a prompt, and you certainly cannot prove it about an agentic loop that selects its own tool calls. This is FR-5 doing real work — the difference between "we instruct the model not to" and "the system cannot."
+The reachability check is the load-bearing one, and the strongest thing this design does. The procedure is a finite graph, so you can walk **every** path — not a sample — and prove the identity check is unbypassable. If one path skips it, the procedure fails validation and cannot be published.
 
-## 5.4 The tension to manage
+This is a category difference from prompting, not a degree difference. Testing samples behaviour; this checks structure, and structure is finite.
 
-Two failure modes pull in opposite directions:
+**What the check does *not* prove:** that the identity check is strong enough (a policy question per jurisdiction), that the fetched data is correct (the operator's system), or that the sentence is accurate (grounding and the post-gate). It proves ordering and gating — the guarantee hardest to obtain any other way, and the one regulators ask about most directly.
 
-- **Too rigid** → coverage collapses; contacts fall to the general-information fallback. Measure the fallback rate; if it climbs, procedures are missing.
-- **Too expressive** → the DSL quietly becomes a programming language (loops, variables, custom expressions), only engineers can author it, and NFR-29 is dead. This is the likelier failure, because every individual request to make it more powerful sounds reasonable.
+**Design — execution model.**
 
-**Rule of thumb:** if a procedure needs something the DSL can't express, that is usually a signal it should be *two procedures plus an escalation*, not a more powerful DSL.
+```mermaid
+stateDiagram-v2
+    [*] --> Selected
+    Selected --> CapabilityCheck
+    CapabilityCheck --> Disabled: capability missing
+    CapabilityCheck --> Preconditions: available
+    Preconditions --> Fallback: any fails
+    Preconditions --> Executing: all hold
+    Executing --> Executing: next step
+    Executing --> Composing: response step
+    Executing --> ActionPath: action step (V2)
+    Executing --> Escalated: escalate step
+    Executing --> Fallback: step error
+    ActionPath --> Composing: verified
+    ActionPath --> Frozen: verification failed
+    Composing --> PostGate --> Sent
+    Disabled --> Escalated
+    Fallback --> Escalated
+    Frozen --> Escalated
+    Sent --> [*]
+    Escalated --> [*]
+```
+
+**Interface**
+
+```
+execute(ProcedureRun, EnrichedEvent) -> Facts + Template | Escalate(context) | Frozen(context)
+dry_run(ProcedureRun, HistoricalConversation) -> WouldHaveSaid
+```
+
+**Failure behaviour.** Any step error routes to the procedure's declared escalation. A step that returns something unexpected freezes the run and escalates with the raw values attached — the engine never coerces an unexpected value into an expected one.
+
+**Design tension to manage.** Too rigid and coverage collapses; too expressive and the format quietly becomes a programming language, at which point only engineers can write procedures and the entire premise is gone. The second is the likelier failure, because every individual request to make it more powerful sounds reasonable. Rule of thumb: if a procedure needs something the format cannot express, that usually means **two procedures plus an escalation**, not a richer format.
+
+**Multi-tenant caveat.** Tenants may override baseline procedures. If every tenant forks every procedure, the library is 30 × N documents rather than 30. Keep the baseline canonical, make overrides narrow and comparable against it, and treat a tenant who has forked everything as an onboarding failure rather than a supported configuration.
 
 ---
 
-# Part 6 — Connector layer
+## 4.7 Connector Layer
 
-## 6.1 Capability contracts
+**Purpose.** Give the engine one uniform, contract-checked way to reach any operator's systems.
 
-The biggest unknown in the plan is whether operator back offices can serve the read steps at all (Requirements, open question 2). This design is built to survive a bad answer.
+**Requirements**
+
+- Identify the player using the operator's own stable customer identifier. Email matching alone is not sufficient.
+- Confirm identity before revealing anything about an account, to a standard set per jurisdiction.
+- Detect self-excluded and cooling-off players at identity resolution and route them to a distinct protective policy.
+- **If operator systems are unavailable, escalate with an honest explanation. Never guess, never invent a status.**
+- Limit how hard we query each operator's systems — we must not be why an operator's back office falls over.
+- Mask personal data before anything reaches a model provider.
+
+**Design — capability contracts.** Each type of lookup is a declared capability with a fixed interface. A tenant's connector implements what that operator can actually supply; nothing more is required to onboard.
 
 ```mermaid
 graph LR
     subgraph P["Procedures declare"]
-        P1["where_is_my_deposit<br/>requires: PlayerState, Transactions"]
-        P2["bonus_status<br/>requires: PlayerState, BonusState"]
-        P3["kyc_status<br/>requires: PlayerState, KycState"]
+        P1["where_is_my_deposit<br/>needs PlayerState, Transactions"]
+        P2["bonus_status<br/>needs PlayerState, BonusState"]
     end
-
-    subgraph N["Capability negotiation at onboarding"]
-        NEG["Probe each contract<br/>against tenant connector"]
+    subgraph N["Onboarding probe"]
+        NEG["Test each contract<br/>against the tenant's connector"]
     end
-
     subgraph T["Tenant A result"]
         T1["PlayerState ✓"]
         T2["Transactions ✓"]
-        T3["KycState ✓"]
         T4["BonusState ✗"]
     end
-
     P1 --> NEG
     P2 --> NEG
-    P3 --> NEG
-    NEG --> T1 & T2 & T3 & T4
-    T4 -.->|"bonus_status disabled<br/>routes to humans"| OUT["Tenant A runs 8 of 9 procedures"]
+    NEG --> T1 & T2 & T4
+    T4 -.->|"bonus_status disabled,<br/>routes to humans"| OUT["8 of 9 procedures live"]
 ```
 
-| Contract | Methods | Backs |
+| Contract | Read (V1) | Write (V2) |
 |---|---|---|
-| `IdentityProvider` | `resolve`, `verify` | FR-15, FR-16 |
-| `PlayerStateProvider` | `get_state`, `get_limits`, `get_rg_status` | FR-17 |
-| `TransactionProvider` | `list_deposits`, `list_withdrawals`, `get_status` | Deposit/withdrawal procedures |
-| `KycProvider` | `get_status`, `get_outstanding_documents` | KYC procedure |
-| `BonusProvider` | `get_active`, `get_wagering_progress`, `check_eligibility` | Bonus procedure |
-| `TicketProvider` | `write_outcome` | FR-87 |
+| `IdentityProvider` | `resolve`, `verify` | — |
+| `PlayerStateProvider` | `get_state`, `get_limits`, `get_rg_status` | `apply_limit`, `unlock_account` |
+| `TransactionProvider` | `list_deposits`, `list_withdrawals`, `get_status` | `trigger_refund` |
+| `KycProvider` | `get_status`, `get_outstanding_documents` | `resend_verification`, `request_reupload` |
+| `BonusProvider` | `get_active`, `get_wagering_progress`, `check_eligibility` | `issue_bonus` |
+| `TicketProvider` | — | `write_outcome`, `update_ticket` |
+| `CredentialProvider` | — | `reset_credential` |
 
-**Design rules:**
+**Design — data minimisation.** The procedure declares which data classes it may touch. The connector redacts everything else from results **before** they enter a prompt. This is the concrete mechanism behind PII masking: it happens at the boundary, so the model never receives fields the procedure did not declare.
 
-- A tenant's connector implements what that operator can actually supply. Nothing more is required to onboard.
-- Unmet capability → procedure disabled for that tenant, contacts route to humans. Degraded, not broken (FR-10).
-- Connector failure at runtime → truthful escalation. **Never guess, never fabricate a status** (FR-18).
-- Per-tenant rate limiting at the connector boundary. We must not be why an operator's back office falls over (NFR-8).
-- Read-only credential scopes in V1 (NFR-15). The write scope is a separate grant, requested at V2.
+**Design — read and write are granted separately.** A tenant may support transaction reads without granting refunds. V2 re-runs capability negotiation for the write surface only, against a separate credential.
 
----
+**Interface**
 
-# Part 7 — Knowledge and retrieval
-
-Per-tenant index over operator content: T&Cs, bonus terms, help centre, payment methods, game rules (FR-54).
-
-| Concern | Design |
-|---|---|
-| Grounding | The agent may not assert terms it cannot ground in indexed source (FR-55). Ungrounded → escalate. |
-| Freshness | Re-index on change; staleness visible to the tenant. Wrong bonus terms are a complaint generator (FR-56). |
-| Isolation | Index is per-tenant, partitioned like every other data store (NFR-13). |
-| Market filtering | Retrieval is filtered by the player's market so the answer cites the copy that actually applies to them. |
-| Approved copy | A **separate** store from the knowledge index — human-translated, version-controlled, hash-verifiable by the post-gate (FR-57). Never machine-translated at runtime (FR-25). |
-
-The general-information procedure is the only path that reaches retrieval without an account read. It is effectively a constrained, retrieval-grounded loop for the long tail — procedures for the head, grounded generation for the tail, escalation for everything else.
-
----
-
-# Part 8 — Model strategy
-
-The section the whole design hinges on economically. **The rule: a small model touches every message; a mid model runs only when a procedure reaches a `respond` step.**
-
-## 8.1 Routing table
-
-| # | Use case | Volume | Model | Price (in/out per Mtok) | Why this tier |
-|---|---|---|---|---|---|
-| 1 | Language detection | Every message | **fastText / CLD3** (non-LLM) | free | Deterministic, microseconds. No model needed. |
-| 2 | RG lexicon screen | Every message | **Deterministic patterns** | free | Recall floor that does not depend on a model being available |
-| 3 | **Unified classification** — intent, emotion band, RG risk, abuse, confidence, entities | **Every message** | **Claude Haiku 4.5** (`claude-haiku-4-5`) | $1 / $5 | Highest-volume call in the system. Structured output, strong multilingual behaviour, fast enough for a sub-400 ms gate. **This is where the simple model earns its keep.** |
-| 4 | RG secondary confirmation | ~5% (medium signals only) | **Claude Sonnet 5** (`claude-sonnet-5`) | $3 / $15 | Precision pass. Recall is already guaranteed by #2 ∪ #3 |
-| 5 | **Player-facing composition** | 1–2 per conversation | **Claude Sonnet 5** | $3 / $15 | Where CSAT is bought. Empathy and accuracy over a fixed fact set |
-| 6 | Complex composition (multi-intent, low confidence, high emotion) | ~5% of responses | **Claude Opus 5** (`claude-opus-5`) | $5 / $25 | Reserved for the hardest turns; most likely to otherwise escalate |
-| 7 | Grounding verification | Per knowledge answer | **Claude Haiku 4.5** | $1 / $5 | Binary check against retrieved source |
-| 8 | Post-gate output classification | Every outbound | **Claude Haiku 4.5** | $1 / $5 | Inducement-language scan alongside deterministic checks |
-| 9 | Escalation context pack | Per escalation | **Claude Haiku 4.5** | $1 / $5 | Human-facing summary, never player-facing |
-| 10 | QA sampling and dry-run judging | Offline | **Claude Opus 5 via Batch API** | −50% | Quality matters, latency does not |
-| 11 | Procedure authoring assistance | Offline, on demand | **Claude Opus 5** | $5 / $25 | Helping a CS lead draft a procedure |
-
-Model IDs are exact strings. `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5` — no date suffixes.
-
-## 8.2 Where the simple model goes — and why
-
-```mermaid
-graph TB
-    IN["Every inbound message"] --> DET["Deterministic<br/>language + RG lexicon<br/>$0 · microseconds"]
-    DET --> HAIKU["Haiku 4.5 — one structured call<br/>intent + emotion + RG + abuse + confidence + entities<br/>~$0.002 · 200-400ms"]
-
-    HAIKU --> GATE{"Pre-gate<br/>outcome"}
-    GATE -->|"escalate / locked copy<br/>~40% in V1"| CHEAP["Haiku context pack<br/>NO generation model"]
-    GATE -->|"proceed"| ENG["Procedure engine<br/>deterministic · no model"]
-
-    ENG --> RESP{"Reached a<br/>respond step?"}
-    RESP -->|"no — escalate"| CHEAP
-    RESP -->|"yes"| SONNET["Sonnet 5 composition<br/>~$0.016"]
-    SONNET --> POST["Haiku post-gate<br/>~$0.002"]
-
-    style HAIKU fill:#27ae60,color:#fff
-    style DET fill:#27ae60,color:#fff
-    style CHEAP fill:#27ae60,color:#fff
-    style SONNET fill:#2980b9,color:#fff
+```
+capability(name).method(params) -> Result | Unavailable | Unsupported
+probe(tenant) -> {capability: supported | unsupported}
 ```
 
-**The economics of the split.** Roughly 40% of V1 conversations end in escalation without ever reaching a `respond` step. Those conversations pay for classification and a context pack — Haiku only — and never touch a generation-tier model. Putting a mid-tier model on the classification path instead would multiply the highest-volume call in the system by 3× for no quality gain: classification is structured extraction against a fixed taxonomy, which is exactly what the small tier is for.
+**Failure behaviour.** `Unavailable` escalates with a truthful explanation to the player. `Unsupported` should never occur at runtime, because procedures requiring it were disabled at selection — if it does, it is a configuration bug and the run freezes.
 
-Published routing practice puts the saving from this pattern at 40–70% with no measurable quality drop on the majority of requests, and small classifiers are the standard first stage. Our split follows that shape, with the addition that the *procedure engine itself is deterministic* — a large share of the work between classification and composition costs no tokens at all.
+---
 
-**Three things deliberately do not use a model:**
+## 4.8 Knowledge Index
 
-- Procedure control flow. Branching on `status == "pending"` is a comparison, not an inference.
-- Precondition evaluation. These must be provable (§5.3).
-- Locked-copy selection. A lookup by intent × market × language. Introducing a model here would reintroduce exactly the risk FR-51 exists to remove.
+**Purpose.** Answer questions that do not touch the account, from the operator's own published content.
 
-## 8.3 The single-call classification design
+**Requirements**
 
-One Haiku call per inbound message returns one structured object. The alternative — separate calls for intent, emotion, and RG — triples the per-message cost and adds two round trips to a sub-3-second budget.
+- Keep a searchable copy of each operator's content: terms and conditions, bonus terms, help centre, payment methods, game rules.
+- Answers must be grounded in that content. The agent must not state terms or policy it cannot point to a source for.
+- Re-index on change, and show the operator when content has gone stale.
+- Maintain a per-market library of approved fixed wording, separate from the searchable content.
+
+**Design.** Per-tenant partition, retrieval filtered by the player's market so the answer cites the copy that actually applies to them. A grounding check runs before composition; if the retrieved content does not support an answer, the conversation escalates rather than the model filling the gap.
+
+**Approved fixed wording lives in a separate store** from the searchable index — version-controlled, human-translated per market, and hash-verifiable so the post-gate can confirm that what was sent is exactly what was approved.
+
+The general-information procedure is the only path reaching retrieval without an account lookup. It is effectively a constrained, grounded generation loop for the long tail: **procedures for the common questions, grounded retrieval for the tail, humans for everything else.**
+
+**Interface**
+
+```
+search(query, market, language, tenant) -> [Passage]
+approved_copy(key, market, language, tenant) -> LockedText + hash
+```
+
+**Failure behaviour.** No usable passage escalates. Stale content beyond a configured threshold raises a tenant-visible warning — quoting last month's bonus terms is a complaint generator.
+
+---
+
+## 4.9 Composer
+
+**Purpose.** Turn the facts a procedure fetched into a sentence a player wants to read.
+
+**Requirements**
+
+- Reply in the player's language, across 120+ languages.
+- Approved fixed wording is human-translated per market and never machine-translated at runtime.
+- The emotional band shapes tone, not just routing.
+- Say the agent is automated in the first message of every conversation, under a name that is clearly not a person's.
+- Never write anything promotional or that encourages further play.
+
+**Design.** The composer receives a template, a fixed list of facts, and the emotional band. It does **not** receive tools, and it does not receive the player's raw message as an instruction — only as context. It cannot fetch anything, so a manipulation attempt in the message body can influence phrasing at most, which is what the post-gate exists to catch.
+
+Facts arrive as named values (`amount = €200.00`, `completed_at = 2 August 14:20`), so the model cannot invent a date — the date is either present or the template branch that needs it was not selected.
+
+Tone mapping by band: neutral gets the normal voice; mild frustration gets answer-first with pleasantries dropped; high frustration reaching composition at all means the answer is confident and complete, phrased directly.
+
+**Interface**
+
+```
+compose(template, facts, band, language, tenant_tone) -> CandidateText
+```
+
+**Failure behaviour.** A template referencing a fact the procedure did not supply is a validation error caught at author time, not a runtime substitution. If composition fails, escalate.
+
+---
+
+## 4.10 Safety Post-Gate
+
+**Purpose.** The last thing between generated text and a player.
+
+**Requirements**
+
+- Confirm approved fixed wording verifiably came from the approved store.
+- Confirm no promotional or play-encouraging language is present.
+- Confirm no other player's details are present.
+- Sanitise output before sending.
+- Treat everything a player writes, and everything retrieved, as untrusted — it must never alter agent instructions or take over a procedure.
+
+**Design.** Mostly deterministic, which is what makes it cheap enough to run on everything.
+
+| Check | Method |
+|---|---|
+| Locked wording matches the approved store | Hash comparison |
+| No unresolved template placeholders | Pattern match |
+| No other player's identifiers present | Scan against the resolved player's identifiers |
+| No promotional or inducement language | Deterministic list plus a small-model classifier |
+| Output sanitised | Deterministic |
+
+This is belt and braces on the one failure class that cannot be undone. It is also how "zero generated text on a forbidden topic" holds as a claim rather than a hope: when the pre-gate has selected locked wording, the post-gate verifies the hash, so a generated sentence cannot reach a player on those topics even if something upstream misbehaved.
+
+**Interface**
+
+```
+validate(CandidateText, context) -> Approved(text) | Rejected(reason)
+```
+
+**Failure behaviour.** Rejection escalates and raises a high-severity alert. A rejection means an upstream component produced something it should not have, which is an incident regardless of the fact that we caught it.
+
+---
+
+## 4.11 Writer
+
+**Purpose.** Send exactly once.
+
+**Requirements**
+
+- Never send the same reply twice. A duplicate message to a player is worse than a slow one.
+- Stop immediately when the kill switch is on, while continuing to ingest, classify, and log.
+
+**Design.** Idempotency key derived deterministically from the triggering inbound message and the procedure run. Claimed before sending. The Writer is the only component permitted to call a channel adapter's outbound path, so send-exactly-once has exactly one owner and one place to audit.
+
+Re-checks the kill switch immediately before sending — the switch must take effect in under 10 seconds, and a message already composed must not slip out behind it.
+
+**Interface**
+
+```
+send(Approved, conversation, idempotency_key) -> Sent | AlreadySent | Suppressed
+```
+
+**Failure behaviour.** Send failure retries with backoff against the same key. Repeated failure escalates the conversation, so a channel outage becomes a human handover rather than a silent gap.
+
+---
+
+## 4.12 Model Gateway
+
+**Purpose.** The single egress for every model call, so routing, caching, cost, and fallback have one owner.
+
+**Requirements**
+
+- Route each call to the appropriate model tier.
+- Keep per-call cost and latency within the system's budgets.
+- Record which model produced every output, for audit.
+- Never let a model failure become a wrong answer.
+
+**Design — routing table.** The rule: **a small model touches every message; a mid model runs only when a procedure reaches a response step; action execution uses no model at all.**
+
+| # | Use case | Phase | Volume | Model | Price (in/out per Mtok) | Why this tier |
+|---|---|---|---|---|---|---|
+| 1 | Language detection | V1 | Every message | fastText / CLD3 (non-LLM) | free | Deterministic, microseconds |
+| 2 | RG pattern screen | V1 | Every message | Deterministic patterns | free | Recall floor independent of any model being up |
+| 3 | **Unified classification** — intent, emotion, RG risk, abuse, confidence, entities | V1 | **Every message** | **Claude Haiku 4.5** (`claude-haiku-4-5`) | $1 / $5 | Highest-volume call in the system; structured extraction against a fixed taxonomy. **This is where the small model earns its keep** |
+| 4 | RG secondary confirmation | V1 | ~5% | Claude Sonnet 5 (`claude-sonnet-5`) | $3 / $15 | Precision pass; recall already guaranteed by #2 ∪ #3 |
+| 5 | **Player-facing composition** | V1 | 1–2 per conv | **Claude Sonnet 5** | $3 / $15 | Where satisfaction is won — empathy and accuracy over a fixed fact set |
+| 6 | Complex composition (multi-topic, low confidence, high emotion) | V1 | ~5% | Claude Opus 5 (`claude-opus-5`) | $5 / $25 | The hardest turns, most likely to otherwise escalate |
+| 7 | Grounding verification | V1 | Per knowledge answer | Claude Haiku 4.5 | $1 / $5 | Binary check against retrieved source |
+| 8 | Post-gate language scan | V1 | Every outbound | Claude Haiku 4.5 | $1 / $5 | Runs beside the deterministic checks |
+| 9 | Escalation context pack | V1 | Per escalation | Claude Haiku 4.5 | $1 / $5 | Human-facing, never player-facing |
+| 10 | Quality sampling, rehearsal judging | V1 | Offline | Claude Opus 5 via Batch API | −50% | Quality matters, latency does not |
+| 11 | Procedure authoring assistance | V1 | On demand | Claude Opus 5 | $5 / $25 | Helping a CS lead draft a procedure |
+| 12 | **Action parameter binding** | V2 | Per action | **none — deterministic** | — | Values come from the procedure and already-fetched facts |
+| 13 | Action confirmation message | V2 | Per action | Claude Sonnet 5 | $3 / $15 | The action already happened; this phrases the outcome |
+| 14 | Approval summary for the reviewer | V2 | Per approval | Claude Haiku 4.5 | $1 / $5 | Internal, structured |
+| 15 | Agent-assist suggestion | V2 | Per human turn | Claude Sonnet 5 | $3 / $15 | A human reads and edits it; quality matters, stakes are lower |
+| 16 | **Suppression and permission evaluation** | V3 | Per candidate | **none — deterministic** | — | Database lookups. Inferring these would be indefensible |
+| 17 | Proactive personalisation | V3 | Per send | Claude Sonnet 5 | $3 / $15 | Same composer, different template source |
+| 18 | Voice classification | V3 | Every utterance | Claude Haiku 4.5 | $1 / $5 | Same call as #3 on a tighter budget |
+| 19 | Prosody emotion features | V3 | Every utterance | Audio feature extraction (non-LLM) | — | Tone of voice carries what a transcript cannot |
+
+**Design — why the split pays.** Roughly 40% of V1 conversations escalate without ever reaching a response step. Those pay for classification and a context pack — small model only — and never touch a generation-tier model. Classification is three calls per conversation but **15% of model cost**; composition is two calls and **71%**.
+
+Published routing practice puts the saving from a small-classifier front end at 40–70% with no measurable quality drop on most requests. Our variant adds that the procedure engine between classification and composition is deterministic, so much of the middle costs nothing at all.
+
+**Design — one classification call, not three.** Separate calls for intent, emotion, and RG would triple the highest-volume cost and add two round trips to a sub-3-second budget. One call returns one structured object:
 
 ```json
 {
-  "intent":      { "primary": "deposit_missing", "secondary": "bonus_eligibility" },
-  "confidence":  0.93,
-  "emotion":     { "band": "mild_frustration", "trajectory": "rising", "score": 0.62 },
-  "rg_risk":     { "level": "none", "signals": [] },
-  "abuse":       { "level": "none" },
-  "language":    "de",
-  "entities":    { "amount": "200 EUR", "method": "Visa", "when": "yesterday" }
+  "intent":     { "primary": "deposit_missing", "secondary": "bonus_eligibility" },
+  "confidence": 0.93,
+  "emotion":    { "band": "mild_frustration", "trajectory": "rising", "score": 0.62 },
+  "rg_risk":    { "level": "none", "signals": [] },
+  "abuse":      { "level": "none" },
+  "language":   "de",
+  "entities":   { "amount": "200 EUR", "method": "Visa", "when": "yesterday" }
 }
 ```
 
-Enforced with structured outputs (`output_config.format` with a JSON schema) so the shape is guaranteed rather than parsed hopefully. Adaptive thinking is **off** for this call — it is extraction against a fixed taxonomy, and the latency budget is 400 ms (NFR-4).
+Shape guaranteed by structured outputs rather than parsed hopefully. Extended thinking is off for this call — it is extraction against a fixed taxonomy on a 400 ms budget.
 
-Semantics worth recording:
-
-- **Primary intent selects the procedure. Secondary is carried into the respond step** so the answer can acknowledge it, and is logged for analytics. If the secondary is an always-escalate intent, it **wins** over the primary.
-- **RG risk is orthogonal to intent** and evaluated on every message regardless of what the message is "about." A deposit question can carry a distress signal; the distress wins.
-- **The deterministic lexicon result is OR-ed in, never AND-ed.** Either layer firing is sufficient. This is what makes FR-47's 100% coverage robust to a classifier regression.
-- **Language is detected deterministically pre-call**; the classifier's language field is a cross-check. A mismatch lowers effective confidence.
-
-## 8.4 Prompt caching — and a non-obvious constraint
-
-The classification system prompt (taxonomy, band definitions, few-shot examples, output schema) is stable per tenant and cached. So is the composition prefix (procedure definition, approved copy pack, tenant tone config).
-
-**The constraint that shapes the design: minimum cacheable prefix is model-dependent, and it is not monotonic across tiers.**
+**Design — caching, and a constraint that shapes the prompt.** The classification system prompt is stable per tenant and cached, as is the composition prefix. But the minimum cacheable prefix is model-dependent and **not monotonic across tiers**:
 
 | Model | Minimum cacheable prefix |
 |---|---|
@@ -529,68 +893,481 @@ The classification system prompt (taxonomy, band definitions, few-shot examples,
 | Claude Sonnet 5 | 1,024 tokens |
 | **Claude Haiku 4.5** | **4,096 tokens** |
 
-Haiku has the *highest* minimum of the three. A compact 2,000-token classification prompt would **silently fail to cache** — no error, just `cache_creation_input_tokens: 0` and full price on every one of the highest-volume calls in the system.
+Haiku has the *highest* minimum. A compact 2,000-token classification prompt would **silently fail to cache** — no error, just full price on the highest-volume call in the system.
 
-**Design consequence:** the classification system prompt is deliberately built to exceed 4,096 tokens — full taxonomy definitions, per-band emotional examples, per-market calibration notes, RG signal vocabulary. This is one of the rare cases where a *longer* prompt is cheaper, because cache reads cost ~10% of input price. Verify with `usage.cache_read_input_tokens` in staging before launch; if it reads zero across repeated requests, a silent invalidator is at work.
+So the classification prompt is deliberately built to exceed 4,096 tokens: full taxonomy, per-band examples, per-market calibration notes, RG signal vocabulary. One of the rare cases where a longer prompt is cheaper, because cache reads cost roughly 10% of input. Cache hit rate is monitored and alerted on, because a silent cache break is a ~36% cost increase with no functional symptom.
 
-**Cache hygiene rules** (caching is a prefix match — any byte change invalidates everything after it):
+Cache hygiene: no timestamps or request IDs in the prefix; deterministic key ordering; player-specific context after the last cache breakpoint; never change model mid-conversation.
 
-| Rule | Reason |
-|---|---|
-| No timestamps, UUIDs, or request IDs in the system prompt | Prefix changes every request; nothing ever caches |
-| Tenant config rendered in a deterministic order (sorted keys) | Non-deterministic serialisation changes prefix bytes |
-| Player-specific context goes *after* the last cache breakpoint | Keeps the shared prefix reusable across all players on that tenant |
-| Never change the model mid-conversation | Caches are model-scoped |
-| Procedure definition sits in the cached prefix; step outputs after it | Procedure changes rarely, facts change per turn |
-
-Cache economics: reads ~0.1×, writes 1.25× (5-minute TTL). Break-even is two requests. At our volumes the classification prefix is read thousands of times per write.
-
-## 8.5 Batch API for the offline loop
-
-QA sampling, dry-run judging, and procedure regression testing (FR-89, FR-7) run through the Batch API at **−50%** on all token usage. None of it is latency-sensitive; most batches complete within an hour. This makes it affordable to run Opus-tier judging over a meaningful sample rather than a token one.
-
-## 8.6 Latency budget
+**Interface**
 
 ```
-Ingress + orchestrator + state load ......  <  100 ms
-Deterministic gates (lexicon, state) .....  <   20 ms
-Haiku classification (cached prefix) .....  200 – 400 ms   <- NFR-4 ceiling
-Connector reads (parallelised) ...........  300 – 1500 ms
-Sonnet composition (~300 tok out) ........ 1500 – 3000 ms
-Post-gate (deterministic + Haiku) ........  <  300 ms
-───────────────────────────────────────────────────────
-First visible response ...................  < 3 s p95     <- NFR-1
-Substantive answer .......................  < 8 s p95     <- NFR-2
-Hard ceiling, then escalate ..............   15 s         <- NFR-3
+call(purpose, prompt_parts, schema?) -> Response + {model, cache_state, tokens, latency}
 ```
 
-Three levers hold this:
-
-1. **Connector reads run in parallel**, never sequentially. A procedure declaring three reads issues three concurrent calls.
-2. **Streaming composition** so first tokens appear well before the full answer.
-3. **Cached prefixes** cut time-to-first-token on both model calls.
-
-Where a channel offers no typing indicator, the adapter emits an immediate acknowledgement (NFR-5) — the dead-air problem is worse than an extra message in the transcript.
-
-## 8.7 Degradation and fallback
+**Failure behaviour**
 
 | Failure | Behaviour |
 |---|---|
-| Classification model unavailable | Deterministic lexicon still runs; conversation escalates. **Never proceeds unclassified.** |
-| Composition model unavailable | Escalate with context. Never fall back to a lower tier silently for player-facing text — quality changes are a CSAT and accuracy risk, not a graceful degradation |
-| Connector unavailable | Truthful escalation (FR-18) |
+| Classification model unavailable | Deterministic layer still runs; conversation escalates. Never proceeds unclassified |
+| Composition model unavailable | Escalate. **Never silently fall back to a lower tier for player-facing text** |
 | Latency ceiling breached | Escalate with whatever context was gathered |
-| Any component degraded | **Fail toward humans, never toward silence or a guess** (NFR-11) |
-
-The model in force is recorded on every call as part of the audit record (NFR-22), so a quality regression can be traced to a routing change.
 
 ---
 
-# Part 9 — Multi-tenancy and isolation
+## 4.13 Config Service
 
-**NFR-13 is the highest-severity requirement in the system.** Cross-tenant player data exposure is the failure that ends the product.
+**Purpose.** Hold every per-tenant setting, and make the kill switches instant.
 
-## 9.1 Isolation model
+**Requirements**
+
+- Configurable per tenant: confidence thresholds, emotion thresholds, always-escalate topics, reply cap, debounce window, latency ceiling, disclosure wording, RG wording, supported languages, market mapping, business hours, escalation destinations, action authority, and kill switches.
+- Kill switches — one per tenant and one global — that immediately stop everything said to players while ingestion, classification, and logging continue.
+- A separate switch that stops actions only, without silencing the agent *(V2)*.
+- Kill switch effective in under 10 seconds.
+
+**Design.** Read once per conversation turn by the Orchestrator and attached to the event, so no downstream component reads configuration independently and they cannot disagree. Kill switches are the exception — re-read at the Writer and Action Executor immediately before the irreversible act.
+
+**Why the action switch is separate.** Flipping it degrades the agent to V1 behaviour: still answering, no longer acting. That is a far more useful incident response than silencing it, because silence means every conversation queues for a human.
+
+**Interface**
+
+```
+policy(tenant) -> TenantPolicy
+kill_switch(tenant) -> {conversational: bool, actions: bool}
+```
+
+**Failure behaviour.** If policy cannot be loaded, the conversation escalates. Running on stale or default policy in a regulated setting is not an acceptable degraded mode.
+
+---
+
+## 4.14 Audit Log
+
+**Purpose.** Make every interaction reconstructable.
+
+**Requirements**
+
+- Any interaction can be reconstructed end to end: what was read, what was decided, what was said, under which procedure version and which settings.
+- Records cannot be altered, and tampering is detectable.
+- Records are exportable in a form an operator can hand to a regulator.
+- Retention is configurable per tenant and per market.
+- Support erasure requests across conversations and records.
+
+**Design.** Append-only. One record per step execution:
+
+```
+tenant · conversation · run · step
+procedure name · procedure version · policy version
+inputs (post-redaction) · outputs (post-redaction)
+model in force · cache state · token usage
+duration · decision · gate outcomes
+timestamp
+```
+
+Together with the procedure documents and their sign-off history, this is what answers a regulator's question. *"Show me no player was told their balance without an identity check in Q3"* is answerable with three artifacts: the procedure versions in force, the validation result proving the check is unbypassable, and the log showing which version ran for each conversation.
+
+**Interface**
+
+```
+record(StepExecution) -> void
+reconstruct(conversation) -> [StepExecution]
+export(tenant, period, format) -> RegulatorPackage
+```
+
+---
+
+## 4.15 Reconciler
+
+**Purpose.** Catch what the channel dropped.
+
+**Requirements**
+
+- Do not assume messages always arrive. Check periodically against the source and pick up anything missed.
+- Treat an inbound notification as "something happened, go look" rather than trusting its contents — messages do not arrive in order.
+
+**Design.** A periodic sweep listing recently updated conversations from each channel and comparing against what we processed. Anything missing is enqueued as if newly received, through the same pipeline, with the same idempotency guarantees.
+
+**Interface**
+
+```
+sweep(tenant, since) -> [MissedEvent]
+```
+
+---
+
+## 4.16 Guardrail Evaluator *(V2)*
+
+**Purpose.** Decide whether a proposed action is allowed, and at what value.
+
+**Requirements**
+
+- Action authority is configurable per tenant and per procedure, with monetary ceilings and rate caps.
+- Above a set value, a human approves before anything happens.
+
+**Design — layered authority.**
+
+```mermaid
+graph TB
+    T["Tenant grant<br/>which action types at all"] --> P["Per-procedure grant<br/>which actions in this procedure"]
+    P --> A["Per-action limits<br/>ceiling · per-player daily cap · rate cap · tenant daily aggregate"]
+    A --> AP["Approval threshold<br/>above this, a human decides"]
+    AP --> KS["Action kill switch"]
+    style KS fill:#c0392b,color:#fff
+```
+
+**Exceeding a limit routes to approval — never a silent failure, and never a truncated action.** An agent that quietly issues €50 when the procedure said €200 is worse than one that asks.
+
+**Interface**
+
+```
+evaluate(action, params, tenant, procedure) -> Allow | RequireApproval(reason) | Deny(reason)
+```
+
+**Failure behaviour.** If authority cannot be resolved, deny. The default is always "do not act."
+
+---
+
+## 4.17 Approval Queue *(V2)*
+
+**Purpose.** Put a human in the loop above a threshold, without the player noticing a seam.
+
+**Requirements**
+
+- Actions above a configured value execute as proposals: the agent prepares it, a human approves, the agent completes it and confirms.
+- Irreversible actions always require approval.
+
+**Design.** The proposal carries a small-model summary for the reviewer: player, requested action, value, the facts the procedure fetched, and why the procedure reached this step. Reviewer decisions are recorded in the action log with approver identity and timestamp.
+
+**From the player's side it is one conversation** — "let me sort that out for you," then a confirmation. They never see the approval step.
+
+**Interface**
+
+```
+propose(action, params, summary) -> ApprovalRequest
+resolve(request, approver, decision) -> Approved | Rejected
+```
+
+**Failure behaviour.** Timeout without a decision escalates the conversation to a human with the pending action attached. An action never executes because nobody looked at it.
+
+---
+
+## 4.18 Action Executor *(V2)*
+
+**Purpose.** Execute an action against operator systems exactly once, or know that it did not.
+
+**Requirements**
+
+- Every action is checked beforehand and safe to retry. A retry must never issue a bonus twice or refund twice.
+- Actions are recorded in their own separate, unalterable log.
+
+**Design — lifecycle.**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant EN as Engine
+    participant GR as Guardrails
+    participant EX as Executor
+    participant OP as Operator system
+    participant VF as Verifier
+
+    EN->>GR: action + bound parameters
+    GR-->>EX: allowed (or approved)
+    EX->>OP: re-read preconditions against LIVE state
+    OP-->>EX: current state
+    EX->>EX: claim idempotency key
+    EX->>OP: execute, carrying our action reference
+    OP-->>EX: result
+    EX->>VF: verify
+```
+
+**Design — preconditions re-verified at execution time.** A procedure's preconditions are re-checked immediately before the write, not at selection time. State moves during a conversation: a bonus eligible when the procedure started may not be eligible eight seconds later after the player placed a bet. The check that matters is the last one.
+
+**Design — idempotency.** Retries exist at the channel, at our writer, and at the operator's API. A timeout tells you nothing about whether the action landed.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Claimed: derive deterministic key, claim first
+    Claimed --> Executing
+    Executing --> Verified: operator confirms and state matches
+    Executing --> Failed: operator rejects
+    Executing --> Unknown: timeout, no response
+    Unknown --> Reconciling: query operator by our reference
+    Reconciling --> Verified: found, state matches
+    Reconciling --> Failed: not found
+    Reconciling --> Frozen: ambiguous
+    Failed --> [*]: escalate, no retry
+    Frozen --> [*]: escalate, human resolves
+    Verified --> [*]
+```
+
+Rules:
+
+- The key is **deterministic**, derived from tenant, conversation, triggering message, and step. The same conversational moment always produces the same key.
+- **Claim before executing.** An already-claimed key means resolve the existing claim, not execute again.
+- **On timeout, never blind-retry.** Reconcile by querying the operator for our reference, and act only on what you find.
+- **Ambiguous outcome freezes and escalates.** A duplicate refund is materially worse than a delayed one and, unlike a duplicate message, cannot be apologised away.
+
+**A hard consequence for onboarding:** every action carries our reference so reconciliation is possible. **An operator system that cannot accept an external reference cannot be granted write capabilities.** This is a capability-negotiation criterion, not an implementation detail to work around.
+
+**Design — reversibility.** Every action step declares one of two things at author time, and validation enforces it:
+
+```yaml
+- id: issue_goodwill_bonus
+  action: issue_bonus
+  params: {amount: 10, currency: EUR}
+  compensating_action: revoke_bonus     # reversible
+  ceiling: 25
+
+- id: close_account
+  action: close_account
+  requires_approval: always             # not reversible, so always human
+```
+
+There is no third option. An action that is neither reversible nor approval-gated fails validation.
+
+**Interface**
+
+```
+execute(action, params, idempotency_key) -> Executed(ref) | Failed(reason) | Frozen(context)
+```
+
+---
+
+## 4.19 Outcome Verifier *(V2)*
+
+**Purpose.** Confirm the action actually did what it was supposed to.
+
+**Requirements**
+
+- After every action, re-read the affected state and confirm the expected transition. A mismatch freezes the procedure run and escalates with context.
+
+**Design.** Reads the same state the action was meant to change and compares before and after. Three outcomes: confirmed, mismatch, or unknown. Only confirmed proceeds to composition.
+
+**Why this exists.** Without verification, an action that silently does nothing looks exactly like one that succeeded — and the player gets a confident confirmation of something that never happened. This is what makes "zero incorrect actions" a testable claim rather than an aspiration.
+
+**Interface**
+
+```
+verify(action, state_before, expected_transition) -> Confirmed(state_after) | Mismatch | Unknown
+```
+
+**Failure behaviour.** Mismatch and unknown both freeze the run and escalate with before/after states attached. Neither retries.
+
+---
+
+## 4.20 Action Log *(V2)*
+
+**Purpose.** A separate, immutable record of every action taken.
+
+**Requirements**
+
+- Actions are recorded separately from conversations, immutably.
+
+**Design**
+
+```
+action_id                 the deterministic idempotency key
+tenant · conversation · run · step
+action_type
+parameters                exact values sent
+authority_snapshot        ceilings and caps in force at execution
+approval                  {required, approver, approved_at} | null
+precondition_recheck      state read immediately before execution
+state_before / state_after
+verification_result       confirmed | mismatch | unknown
+compensating_action_id    if reversed
+executed_at · operator_reference
+```
+
+**Why separate from the audit log.** An action is a financial event with a different retention, access, and export profile from a conversation. A regulator asking about transactions should not have to read chat transcripts to find them, and a conversation-retention policy must never delete a financial record.
+
+---
+
+## 4.21 Suggestion Sink *(V2)*
+
+**Purpose.** Give human agents the agent's draft without any risk of it reaching a player.
+
+**Requirements**
+
+- Produce suggestions that only human agents see, never players.
+- Measure how often agents accept a suggestion and how much they change it.
+
+**Design.** Almost free, because it reuses the entire pipeline. When a conversation is handed over, procedures continue running **in shadow** — same classification, same selection, same reads, same composition — but the output routes here instead of to the Writer.
+
+```mermaid
+graph LR
+    ENG["Procedure Engine"] --> COMP["Composer"] --> SW{"Conversation<br/>state"}
+    SW -->|active| POST["Post-Gate"] --> WR["Writer"] --> P["Player"]
+    SW -->|handed over| SUG["Suggestion Sink"] --> H["Human agent UI"]
+    style SUG fill:#8e44ad,color:#fff
+```
+
+One branch at the terminal. No new engine, no new procedures, no new safety model.
+
+**What relaxes and what does not.** The full post-gate is not needed, because a human reads and edits before anything is sent. But **cross-tenant and personal-data checks still apply** — a suggestion showing another operator's player data is exactly as fatal as a message doing so.
+
+**Why it matters strategically.** It converts escalations into assisted resolutions, and gives the human team reason to trust the agent before it is allowed to act. Accept rate and edit distance are also the cleanest available proxy for answer quality, because a human grades every suggestion.
+
+---
+
+## 4.22 Signal Ingestion *(V3)*
+
+**Purpose.** Take behavioural signals from the operator so outreach can be triggered.
+
+**Requirements**
+
+- Accept signals for churn risk, milestones, stalled verification, failed payments, and cleared withdrawals.
+
+**Design.** Normalise, deduplicate, and attribute each signal to a player. Signals are events, not state — the trigger evaluator decides what they mean.
+
+**Interface**
+
+```
+ingest(tenant, signal) -> NormalisedSignal
+```
+
+---
+
+## 4.23 Trigger Evaluator *(V3)*
+
+**Purpose.** Decide which outreach plays a player is a candidate for.
+
+**Requirements**
+
+- Trigger outreach on behavioural signals: churn risk, milestones, stalled verification, failed payments.
+
+**Design — play catalogue.**
+
+| Play | Trigger | Class | Note |
+|---|---|---|---|
+| Proactive status update | Withdrawal cleared, documents approved | Service | Prevents a future inbound contact — highest value, lowest risk |
+| Stalled verification nudge | Documents outstanding beyond threshold | Service | Unblocks the player |
+| Failed payment help | Deposit failed | Service | Must not read as encouragement to retry gambling |
+| Churn re-engagement | Engagement drop | **Marketing** | Full gate stack |
+| Milestone recognition | First deposit, tier reached | **Marketing** | Bonus-bearing, therefore marketing |
+| RG check-in | Behavioural risk pattern | **RG — separate lane** | **Always human-approved before send** |
+
+**The classification that is easiest to get wrong.** "Your withdrawal has cleared" is a service message; "here's a bonus for reaching VIP tier" is marketing. They receive different permission treatment, and **bonus-bearing outreach is marketing by definition regardless of framing.** The play template declares its class and validation enforces it.
+
+**Interface**
+
+```
+evaluate(player, signals, tenant) -> [CandidateSend]
+```
+
+---
+
+## 4.24 Suppression Gate *(V3)*
+
+**Purpose.** Decide whether this player may be contacted at all. The most important component in V3.
+
+**Requirements**
+
+- Check marketing permission and the market's inducement rules before sending anything.
+- Cap how often any one player is contacted, across all campaigns.
+- Gambling-harm outreach is a separate path with its own approval and wording.
+- **Never send commercial messages to self-excluded, cooling-off, or at-risk players.**
+
+**Design — four independent gates, all deterministic.**
+
+```mermaid
+graph TB
+    C["Candidate send"] --> S1{"RG status<br/>self-excluded · cooling-off · flagged?"}
+    S1 -->|any| BLK["SUPPRESS<br/>log with reason"]
+    S1 -->|clear| S2{"Marketing permission<br/>opted in for this class?"}
+    S2 -->|no| BLK
+    S2 -->|yes| S3{"Market policy<br/>legal here?"}
+    S3 -->|no| BLK
+    S3 -->|yes| S4{"Frequency cap<br/>across ALL campaigns"}
+    S4 -->|exceeded| BLK
+    S4 -->|within| S5{"RG play?"}
+    S5 -->|yes| HUM["Human approval<br/>before send"]
+    S5 -->|no| GO["Proceed to composition"]
+    HUM --> GO
+    style BLK fill:#c0392b,color:#fff
+    style S1 fill:#e67e22,color:#fff
+    style HUM fill:#8e44ad,color:#fff
+```
+
+**The rule that matters most: suppression is evaluated immediately before send, never at trigger time.** A player can self-exclude between a trigger firing on Monday and a message going out on Wednesday, which makes Monday's check worthless.
+
+**Hard consequence for onboarding:** the operator's RG status must be readable **synchronously at send time**. A tenant who can only supply it as a nightly export cannot run proactive plays at any price.
+
+**RG outreach is never automated.** The system identifies the candidate and drafts nothing; a trained human decides whether and how to make contact. Automating a wellbeing intervention is the wrong side of a line we should not approach.
+
+**Interface**
+
+```
+gate(CandidateSend) -> Allow | RequireHumanApproval | Suppress(reason)
+```
+
+**Failure behaviour.** If RG status cannot be read, **suppress**. The default is always "do not contact."
+
+---
+
+## 4.25 Voice Adapter *(V3)*
+
+**Purpose.** Speech in, speech out, through the same pipeline.
+
+**Requirements**
+
+- Support voice as another channel, using the same procedures and the same safety checks.
+
+**Design.** Streaming speech-to-text plus prosody feature extraction produce the canonical event. The pipeline is unchanged. Streaming text-to-speech renders the reply.
+
+```mermaid
+graph LR
+    P["Player speaks"] --> STT["Streaming speech-to-text"]
+    P --> PROS["Prosody features<br/>pitch · pace · volume"]
+    STT --> CE["Canonical event"]
+    PROS --> CE
+    CE --> PIPE["Same pipeline"]
+    PIPE --> TTS["Streaming text-to-speech"] --> P
+    style PIPE fill:#2980b9,color:#fff
+```
+
+**What voice adds**
+
+| Addition | Why |
+|---|---|
+| Prosody as a second emotion signal | Tone of voice carries distress a transcript does not |
+| Spoken variants of approved wording | Copy written for reading does not work spoken; each needs a human-reviewed spoken form per market |
+| Barge-in handling | A player interrupting must stop playback and be processed. Silence-as-consent is unacceptable on an RG-sensitive channel |
+| Transcription confidence | A low-confidence transcript lowers effective classification confidence — misheard speech must not become a confident wrong answer |
+| Audio retention policy | Audio is personal data with its own profile |
+
+**The hard constraint — latency.** Conversational turn-taking tolerates roughly 1.2 seconds against the 3 seconds chat allows.
+
+```
+Streaming speech-to-text (partial) .....  continuous
+Classification .........................  < 200 ms   (vs 400 ms in chat)
+Connector reads (parallel) .............  < 400 ms
+Composition, first token ...............  < 400 ms
+Speech synthesis, first audio ..........  < 200 ms
+────────────────────────────────────────────────────
+First audible response .................  < 1.2 s
+```
+
+Consequences: classification runs on **partial transcripts** as the player speaks with a final pass on completion; composition streams into synthesis so audio starts before the sentence finishes; and **procedures needing more than two parallel reads are not voice-eligible** — voice eligibility becomes a procedure attribute checked at author time, like any other capability.
+
+**Why voice is last.** It compresses every existing budget, adds an emotion channel needing separate calibration, and doubles the approved-wording surface. It amplifies the rest of the system rather than adding a new capability, so building it before calibration is stable would mean tuning two things at once and learning from neither.
+
+---
+
+# Part 5 — Cross-cutting concerns
+
+## 5.1 Multi-tenancy and isolation
+
+**Requirements**
+
+- Operators are separated at the database level. No possible query returns one operator's player data to another.
+- Operator credentials are encrypted and never logged, and can be revoked individually.
+- We request the narrowest access possible — read-only until the action release.
+- One operator's traffic spike must not slow another's.
+- Where data is stored is configurable per operator and per market.
+
+**Design — regional cells plus logical tenancy.**
 
 ```mermaid
 graph TB
@@ -599,247 +1376,279 @@ graph TB
         AUTH["AuthN / AuthZ"]
         REG["Procedure registry"]
     end
-
     subgraph EU["Regional cell — EU"]
         EUA["Pipeline"]
-        EUD[("Tenant-partitioned data<br/>row-level tenant_id enforced")]
+        EUD[("Tenant-partitioned data")]
         EUV[("Credential vault")]
     end
-
     subgraph UK["Regional cell — UK"]
         UKA["Pipeline"]
         UKD[("Tenant-partitioned data")]
         UKV[("Credential vault")]
     end
-
     API --> EUA & UKA
     EUA --> EUD & EUV
     UKA --> UKD & UKV
 ```
 
-**Regional cells plus logical tenancy.** Data residency (NFR-19) forces regional deployment regardless, which makes harder isolation cheaper than it first appears — a tenant's data never leaves its cell, and the blast radius of a tenancy bug is one region rather than the platform.
+Data residency forces regional deployment anyway, which makes stronger isolation cheaper than it first appears: a tenant's data never leaves its cell, and a tenancy bug's blast radius is one region rather than the platform.
 
-Within a cell, tenant isolation is enforced **at the data access layer**, not in application code. Every query carries a tenant scope; a query without one fails closed rather than returning everything. This is the single most important line of code in the system, and it is tested as such.
-
-## 9.2 Per-tenant surfaces
+Within a cell, isolation is enforced **at the data access layer**, not in application code. Every query carries a tenant scope; a query without one **fails closed** rather than returning everything. This is the single most important line of code in the system and is tested as such.
 
 | Surface | Isolation |
 |---|---|
-| Player and conversation data | Row-level `tenant_id`, enforced at the data layer, in the regional cell |
-| Operator credentials | Per-tenant vault, encrypted at rest, individually revocable, never logged (FR-75, NFR-14) |
-| Procedures | Per-tenant, from a shared baseline library with override (FR-8) |
-| Knowledge index | Per-tenant partition |
-| Approved copy | Per-tenant × per-market |
-| Config and thresholds | Per-tenant (FR-74) |
-| Model prompt cache | Cache key includes tenant — no cross-tenant prefix sharing, even where prefixes would be identical |
-| Kill switch | Tenant-scoped and global (FR-76) |
+| Player and conversation data | Row-level tenant partition, enforced at the data layer |
+| Read credentials | Per-tenant vault, encrypted, individually revocable |
+| **Write credentials** *(V2)* | **Separate vault entry, separately granted and revoked** |
+| Procedures | Per-tenant, from a canonical baseline with narrow overrides |
+| Knowledge index and approved wording | Per-tenant, per-market |
+| Configuration | Per-tenant |
+| Action authority *(V2)* | Per-tenant × per-procedure × per-action |
+| Suppression sources *(V3)* | Per-tenant, read live, never cached beyond a short window |
+| Model prompt cache | Cache key includes tenant — no cross-tenant prefix sharing |
+| Kill switches | Tenant and global; conversational and action switches independent |
 
-## 9.3 Noisy neighbour
+**Credential escalation at V2** is deliberate friction: a separate, explicit write grant with its own approval and its own vault entry. Silently widening an existing credential's scope would make *"when did this system gain the ability to move money?"* unanswerable.
 
-One tenant's volume spike must not degrade another's latency (NFR-9). Per-tenant concurrency limits, queue partitioning, and per-tenant model-call budgets. A tenant at its ceiling queues; it does not borrow another tenant's headroom.
+## 5.2 State and data model
 
-## 9.4 Onboarding flow
-
-```
-Connect helpdesk → Connect back office → Map identity →
-Negotiate capabilities → Adopt baseline procedures → Dry-run → Go live
-```
-
-Capability negotiation (FR-73) determines which procedures are available. Dry-run (FR-7) executes procedures against real conversations and records what the agent *would* have said, without sending — this is what makes NFR-27's "days, not weeks" honest rather than optimistic. Every stage is rehearsed on real traffic before it touches a player.
-
----
-
-# Part 10 — State and data model
-
-## 10.1 Per-conversation state (FR-41)
+**Per-conversation state**
 
 ```
-tenant_id                 partition key, enforced at data layer
-conversation_id
-channel
-player_ref                stable operator-side identifier
-status                    active | handed_over | closed | suppressed
-last_processed_message_id
+tenant · conversation_id · channel · player_ref
+status                  active | handed_over | closed | suppressed
+last_processed_message
 reply_count
-procedure_stack           [{procedure, version, run_id, state}]
-intent_history
-confidence_history
-emotion_trajectory        rolling window across turns
-repeat_contact_count      prior contacts on the same intent
+procedure_stack         [{procedure, version, run, state}]
+intent_history · confidence_history
+emotion_trajectory      rolling window across turns
+repeat_contact_count
 escalation_reason
-disclosure_sent           bool — automated-agent disclosure, first message
+disclosure_sent
+pending_actions         [{action_id, state}]        (V2)
+assist_mode             suggestions instead of sends (V2)
 ```
 
-**`handed_over` is sticky and one-way** (FR-36). Only an explicit human hand-back reopens the conversation to the agent. This is the highest-consequence behavioural requirement in the system; the state machine makes it structural rather than conditional.
+`handed_over` is one-way. Only an explicit human hand-back reopens the conversation to the agent.
 
-## 10.2 Audit record
-
-Every step execution writes one immutable record (FR-6, NFR-22, NFR-23):
+## 5.3 Latency budgets
 
 ```
-tenant_id · conversation_id · run_id · step_id
-procedure_name · procedure_version
-policy_config_version
-inputs (post-redaction) · outputs (post-redaction)
-model_in_force · cache_state · token_usage
-latency_ms · decision · gate_outcomes
-timestamp
+Chat (V1 / V2)
+  Ingress + orchestrator + state ......  <  100 ms
+  Deterministic gates .................  <   20 ms
+  Classification (cached prefix) ......  200 – 400 ms
+  Connector reads (parallel) ..........  300 – 1500 ms
+  [V2] guardrails + action + verify ...  400 – 2000 ms
+  Composition (~300 tokens) ........... 1500 – 3000 ms
+  Post-gate ...........................  <  300 ms
+  ────────────────────────────────────────────────
+  First visible response ..............  < 3 s at p95
+  Substantive answer ..................  < 8 s at p95
+  Action-confirming answer ............  < 11 s at p95
+  Hard ceiling, then escalate .........   15 s
+
+Voice (V3) ............................  < 1.2 s per turn
 ```
 
-Reconstructable end to end: what was read, what was decided, what was said, under which procedure version and policy configuration. Exportable in a form an operator can hand to a regulator (NFR-24).
+Three levers hold the chat budget: parallel connector reads, streaming composition, and cached prompt prefixes.
 
-## 10.3 PII handling
+## 5.4 Failure and degradation
 
-Masked at the connector boundary before content reaches any model provider (NFR-16). The procedure declares which data classes it may touch (§5.1 `data_classification`); the connector layer redacts everything else from results before they enter a prompt. **This is the concrete mechanism behind "PII masking" — masking happens at the tool boundary, so the model never receives fields the procedure did not declare.**
+**Every degraded path ends with a human holding the conversation and enough context to continue.**
 
-Zero retention with the model provider; no training on operator or player data (NFR-18) — contractual before the first live conversation.
+| Failure | Behaviour |
+|---|---|
+| Classification model down | Deterministic screening still runs; escalate. Never proceed unclassified |
+| Composition model down | Escalate. Never silently drop to a cheaper tier for player-facing text |
+| Operator systems down | Truthful escalation. Never guess a status |
+| Latency ceiling breached | Escalate with gathered context |
+| Post-gate rejects | Escalate and raise a high-severity alert |
+| Action outcome ambiguous *(V2)* | Freeze the run and escalate. Never blind-retry |
+| RG status unreadable *(V3)* | Suppress the send |
+| Configuration unavailable | Escalate. Never run on defaults |
 
----
+## 5.5 Observability
 
-# Part 11 — Observability
-
-| Surface | Contents | Requirement |
+| Surface | Contents | Phase |
 |---|---|---|
-| **Tenant dashboard** | Volume, automation rate (full vs assisted), escalation rate and reasons, CSAT, first-response and resolution times, confidence distribution, top intents | FR-86 |
-| **Outcome write-back** | Intent, confidence, escalation reason written to the operator's own helpdesk | FR-87 |
-| **ROI reporting** | Deflected contacts, agent-hours saved, cost per contact — from metered actuals, not a marketing slider | FR-88 |
-| **Quality review queue** | Stratified sample (intent × confidence × language) into human review; corrections become procedure edits | FR-89 |
-| **Per-market emotion reporting** | Band distribution and escalation outcomes per market, to tune FR-34 against real data | FR-91 |
-| **Alerting** | Confidence drift, escalation spikes, RG detection anomalies, emotion classifier drift per language, connector failures, delivery failures | FR-90 |
-| **Internal ops** | Per-tenant latency, token spend, cache hit rate, model error rate, cross-tenant incident view | NFR-28 |
+| Tenant dashboard | Volume, automation rate, escalation rate and reasons, satisfaction, response and resolution times, confidence spread, top topics | V1 |
+| Outcome write-back | Topic, confidence, escalation reason written into the operator's own help desk | V1 |
+| Financial reporting | Contacts handled, agent hours saved, cost per contact — from metered actuals | V1 |
+| Quality review queue | Stratified sample into human review; corrections become procedure edits | V1 |
+| Per-market emotion reporting | Band distribution and escalation outcomes per market, to tune calibration against real data | V1 |
+| Alerting | Confidence drift, escalation spikes, RG anomalies, emotion drift per language, connector failures, send failures, **cache hit rate** | V1 |
+| Action dashboard | Actions by type, value distribution, approval rate, verification mismatches, reversals | V2 |
+| Assist metrics | Accept rate, edit distance, resolution-time delta | V2 |
+| Proactive dashboard | Sends by play, suppression rate **and reason**, opt-out rate, prevented-contact estimate | V3 |
+| Internal operations | Per-tenant latency, token spend, cache hit rate, model error rate, cross-tenant incident view | V1 |
 
-**Cache hit rate is a first-class metric, not a curiosity.** A silent cache invalidation on the classification prefix is a ~10× cost increase on the highest-volume call in the system, with no functional symptom. Alert on it.
+**Two metrics that look like nothing and mean everything.** A cache hit rate that drops is a ~36% cost increase with no functional symptom. A suppression rate that drops means either the operator's RG feed broke or our gate did — and both look like "everything is fine" from outside.
 
 ---
 
-# Part 12 — Cost model
+# Part 6 — Cost model
 
-## 12.1 Assumptions
+## 6.1 V1 per conversation
 
-V1, read-only. Per conversation: 3 inbound messages after debounce, 2 substantive generated replies, ~40% escalation rate, 5% RG secondary confirmations, steady-state caching. List prices.
+Assumptions: 3 inbound messages after debounce, 2 substantive replies, ~40% escalation, 5% RG secondary confirmations, steady-state caching, list prices.
 
-## 12.2 Model cost per conversation
-
-| Call | Model | Calls/conv | Token shape | Cost/conv |
+| Call | Model | Calls | Token shape | Cost |
 |---|---|---|---|---|
 | Classification | Haiku 4.5 | 3 | 5k cached + 800 fresh in, 200 out | $0.0069 |
 | Composition | Sonnet 5 | 2 | 4k cached + 3.5k fresh in, 300 out | $0.0324 |
 | Post-gate scan | Haiku 4.5 | 2 | 1.5k in, 50 out | $0.0035 |
 | Escalation context pack | Haiku 4.5 | 0.4 | 3k in, 300 out | $0.0018 |
 | RG secondary confirm | Sonnet 5 | 0.05 | 2k in, 150 out | $0.0004 |
-| Retrieval / embeddings | — | — | — | $0.0005 |
+| Retrieval and embeddings | — | — | — | $0.0005 |
 | **Subtotal** | | | | **$0.0455** |
-| Cache writes, retries, dry-runs, QA sampling (+20%) | | | | $0.0091 |
-| **Model cost per conversation** | | | | **≈ $0.055** |
+| Cache writes, retries, rehearsals, sampling (+20%) | | | | $0.0091 |
+| **V1 model cost per conversation** | | | | **≈ $0.055** |
 
-Worked composition call: 4,000 cached × $0.30/M = $0.0012, plus 3,500 fresh × $3/M = $0.0105, plus 300 out × $15/M = $0.0045 → $0.0162 per call.
+## 6.2 V2 and V3
 
-Note the shape: **classification is 3 calls but only 15% of model cost**; composition is 2 calls and 71%. That is the routing design working — the expensive tier runs least often.
+Actions add almost no model cost, because execution is deterministic. What changes is the mix.
 
-## 12.3 All-in, per tenant
-
-| | 10k conv/mo | 100k conv/mo |
-|---|---|---|
-| Model spend | ~$550 | ~$5,500 |
-| Infrastructure (compute, DB, cache, vector store, secrets, observability) | ~$1,400 | ~$4,200 |
-| **Total** | **~$1,950/mo** | **~$9,700/mo** |
-| **Cost per conversation** | **≈ $0.20** | **≈ $0.097** |
-
-## 12.4 Sensitivity
-
-| Scenario | Model cost/conv |
+| Change | Effect |
 |---|---|
-| Base (Haiku + Sonnet 5, list) | $0.055 |
-| Sonnet 5 intro pricing ($2/$10, through 31 Aug 2026) | $0.039 |
-| Opus 5 for all composition | ~$0.095 |
-| Classification cache silently broken | ~$0.075 (+36%) — the failure mode worth alerting on |
-| V2 with writes (higher automation, more turns per conversation) | Model cost rises; cost *per resolution* falls |
+| Escalation 40% → ~20% | More conversations reach composition (+$0.016 each) |
+| Action confirmation | +1 mid-tier call on ~35% of conversations (+$0.006) |
+| Approval summaries | +1 small-model call on ~5% (+$0.0002) |
+| **Action execution itself** | **$0 — deterministic** |
+| Agent-assist | +1 mid-tier call per human turn on ~20% (+$0.008) |
+| **V2 model cost per conversation** | **≈ $0.079** |
+| Proactive send (V3) | ≈ $0.012 each — no classification, no engine |
+| Voice (V3) | ~1.4× chat on models; ~3–4× total once speech services are included |
 
-**Against the human baseline:** an operator's loaded cost per human contact is roughly $3–5. At ~$0.10 all-in and even a conservative V1 automation rate of 40%, the arithmetic is decisive — and it is reportable from metered actuals rather than asserted.
+## 6.3 All-in per tenant
+
+| | V1 · 10k/mo | V1 · 100k/mo | V2 · 100k/mo | V3 · 100k + 50k outreach |
+|---|---|---|---|---|
+| Model spend | ~$550 | ~$5,500 | ~$7,900 | ~$8,500 |
+| Infrastructure | ~$1,400 | ~$4,200 | ~$5,000 | ~$6,200 |
+| **Total** | **~$1,950** | **~$9,700** | **~$12,900** | **~$14,700** |
+| Per conversation | ≈ $0.20 | ≈ $0.097 | ≈ $0.129 | ≈ $0.098 |
+| **Per automated resolution** | ≈ $0.49 | ≈ $0.24 | **≈ $0.17** | ≈ $0.17 |
+
+**Cost per conversation rises ~44% in V2; cost per automated resolution falls**, because automation roughly doubles. That second number is the one to quote to a buyer, and the one to price against.
+
+**Against the human baseline** of roughly $3–5 per contact, the arithmetic is decisive at every phase — and reportable from metered actuals rather than asserted.
+
+## 6.4 Sensitivity
+
+| Scenario | Model cost per conversation |
+|---|---|
+| V1 base, list prices | $0.055 |
+| Sonnet 5 introductory pricing ($2/$10, through 31 Aug 2026) | $0.039 |
+| Top tier for all composition | ~$0.095 |
+| **Classification cache silently broken** | **~$0.075 (+36%)** |
+| V2 with actions | $0.079 |
 
 ---
 
-# Part 13 — Forward compatibility
+# Part 7 — Risks
 
-## 13.1 What V1 builds that V1 does not use
-
-Deliberate cost, taken so V2 is a policy change rather than a re-architecture:
-
-| Built in V1 | Used in V1 | Rationale |
-|---|---|---|
-| Full step vocabulary including write types (FR-4, FR-12) | No — execution gated | V2 flips a policy flag, not an engine rewrite |
-| Write-step author-time validation (FR-5) | Yes — rejects them | Procedures fail at author time, never at runtime in front of a player |
-| Distinct action-log schema (FR-63) | No | Writing it later means migrating audit history |
-| Idempotency keys on the Writer (FR-42) | Yes, for messages | Same mechanism prevents double-refunds in V2 |
-| Read-only credential scoping (NFR-15) | Yes | Write scope is a separate, later grant — auditable as a discrete event |
-
-## 13.2 V2 and V3 hooks
-
-**V2 — writes and agent-assist.** The engine, audit trail, preconditions and guardrails are identical to read steps; only the executor is gated. Adds: monetary ceilings and rate caps (FR-60), dual control above a threshold (FR-61), reversibility gating (FR-62), a write-specific kill switch independent of the conversational one (FR-64).
-
-**Entry criteria are not calendar-based** — V2 write execution does not begin until V1 demonstrates sub-0.5% wrong-answer rate, zero always-escalate leakage, zero talks-over-human incidents, and an audit trail proven against a real compliance review. Writes are where a wrong answer becomes a wrong transaction.
-
-**V3 — proactive and voice.** The proactive engine sits beside the reactive pipeline, sharing the connector layer, safety gates, and audit log. It carries a compliance problem V1 and V2 do not have: unsolicited contact is governed by marketing permission and jurisdictional inducement rules, and **the dominant risk shifts from wrong answer → wrong transaction → wrong recipient.** FR-71 (suppress all commercial outreach to self-excluded, cooling-off, and RG-flagged players) is the requirement to be most careful with in the entire document.
-
----
-
-# Part 14 — Risks
+## 7.1 All phases
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Cross-tenant data exposure | Low | **Critical** | Data-layer tenant enforcement, regional cells, fail-closed queries, dedicated test suite, pen test before first production tenant |
-| Operator back office cannot serve the read steps | **Medium** | High | Capability contracts (§6), procedures degrade per tenant, capability probe in week 1 of onboarding |
-| Emotion gate over-escalates in a non-English market | **Medium** | Medium | Per-market calibration (FR-34), per-language accuracy monitoring (FR-35), over-escalation metric in success criteria |
-| RG signal missed in a low-resource language | Low | **Critical** | Deterministic lexicon ∪ model screen; per-language recall measurement; lexicon-only languages get tighter escalation thresholds |
-| Always-escalate leakage | Low | **Critical** | Structural unreachability of the respond step + post-gate hash verification + red-team corpus in CI with a zero-leak release bar |
-| Agent talks over a human | Low | High | Sticky one-way `handed_over` state; assignment guard; periodic state audit against helpdesk assignment |
-| Bad answer reaches a player (unrecoverable — no edit or delete) | Medium | High | Confidence gating, grounding requirement, post-gate, kill switch, QA sampling |
-| Classification prompt cache silently breaks | Medium | Medium | Cache-hit-rate alerting; staging verification of `cache_read_input_tokens` before launch |
-| Procedure sprawl / DSL becomes a programming language | **Medium** | Medium | Fallback-rate metric; NFR-29 as a release gate — if a CS lead can't author unaided, the DSL has drifted |
-| Model provider price or behaviour change | Medium | Medium | Gateway abstraction, provider-portable prompts, monthly cost re-derivation from metered actuals |
+| Cross-tenant data exposure | Low | **Critical** | Data-layer enforcement, regional cells, fail-closed queries, dedicated test suite, penetration test before the first live tenant |
+| Operator back office cannot serve the reads | **Medium** | High | Capability contracts, per-tenant degradation, capability probe in week 1 |
+| Model provider price or behaviour change | Medium | Medium | Gateway abstraction, portable prompts, monthly cost re-derivation from actuals |
+| Procedure sprawl; format becomes a programming language | **Medium** | Medium | Fallback-rate metric; non-engineer authoring as a release gate; canonical baseline with narrow overrides |
+
+## 7.2 V1 — the risk is a wrong answer
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Emotion gate over-escalates in a non-English market | **Medium** | Medium | Per-market calibration, per-language monitoring, over-escalation as a tracked success metric |
+| RG signal missed in a low-resource language | Low | **Critical** | Deterministic patterns OR-ed with model screening; per-language recall measurement; tighter thresholds where only patterns exist |
+| Generated text on a forbidden topic | Low | **Critical** | Structural unreachability of the response step, plus post-gate hash verification, plus a red-team corpus in CI with a zero-leak release bar |
+| Agent talks over a human | Low | High | One-way handover state, assignment guard, periodic state audit against help-desk assignment |
+| Bad answer reaches a player | Medium | High | Confidence gating, grounding requirement, post-gate, kill switch, quality sampling |
+| Classification cache silently breaks | Medium | Medium | Cache-hit-rate alerting; verification in staging before launch |
+
+## 7.3 V2 — the risk is a wrong transaction
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| **Duplicate action from a retry** | **Medium** | **Critical** | Deterministic key, claim-before-execute, reconcile-never-blind-retry, freeze on ambiguity |
+| Action executes against stale state | Medium | High | Preconditions re-verified against live state at execution time |
+| Silent no-op looks like success | Medium | High | Outcome verification; mismatch freezes the run |
+| Ceiling misconfiguration issues excessive value | Low | **Critical** | Layered authority, aggregate daily caps, dual control, staged rollout from low ceilings |
+| Write credentials over-scoped | Low | **Critical** | Separate grant, separate vault entry, independently revocable, per-action scoping |
+| Operator cannot accept an external reference | Medium | High | Becomes a write-capability criterion — reconciliation is impossible without it |
+| V2 enabled before V1 accuracy is proven | Medium | **Critical** | Hard entry criteria — an accuracy gate, not a date |
+
+## 7.4 V3 — the risk is a wrong recipient
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| **Outreach to a self-excluded player** | Low | **Catastrophic** | Suppression at send time, live RG read required as a capability, every suppression logged as evidence |
+| Player self-excludes between trigger and send | **Medium** | **Catastrophic** | Precisely why the gate sits at send time |
+| Marketing message misclassified as service | **Medium** | High | Play template declares its class; validation enforces it; bonus-bearing is marketing by definition |
+| Inducement-rule breach in a market | Medium | High | Per-market policy gate, approved templates per market, one play at a time |
+| Frequency fatigue and opt-outs | Medium | Medium | Cross-campaign capping, opt-out rate monitored |
+| RG outreach automated by accident | Low | **Catastrophic** | Structurally separate lane with mandatory human approval |
+| Misheard speech becomes a confident wrong answer | Medium | High | Transcription confidence lowers effective classification confidence; low confidence escalates |
 
 ---
 
-# Part 15 — Competitive landscape and references
+# Part 8 — Rollout
 
-## 15.1 The category is real and contested
+## 8.1 Onboarding a tenant
 
-Research confirms an established and crowded market, which is a validation of the problem and a caution on differentiation.
+```
+V1   Connect help desk → connect back office (read) → map player identity →
+     probe read capabilities → adopt procedures → rehearse on real traffic → go live
 
-| Vendor | Positioning |
+V2   Grant write scopes → probe write capabilities →
+     set authority (ceilings, caps, approval thresholds) →
+     rehearse actions in shadow → enable lowest-risk actions → raise ceilings on evidence
+
+V3   Connect signals → import suppression sources → map permissions →
+     approve play templates per market → shadow-run triggers (evaluate, do not send) →
+     enable one play at a time
+```
+
+Rehearsal on real traffic is what makes "days, not weeks" honest rather than optimistic. Every stage is practised on live conversations before it touches a player — and in V2, before it touches an account.
+
+## 8.2 Enabling actions, lowest risk first
+
+```
+1. update_ticket           no player-visible effect, no money
+2. resend_verification     player-visible, no money, trivially repeatable
+3. reset_credential        player-visible, no money, security-reviewed
+4. apply_limit             player-protective, one-way but always safe
+5. issue_bonus             money out, ceiling-gated, approval above threshold
+6. trigger_refund          money out, ceiling-gated, approval above threshold
+7. close_account           irreversible, always approved
+```
+
+Ceilings start low and rise as verified-outcome history accumulates. A tenant may stop at step 4 indefinitely if that matches their risk appetite.
+
+---
+
+# Appendix A — Glossary
+
+| Term | Meaning |
 |---|---|
-| **Cevro AI** | The benchmark competitor. "AI Procedures (AIP)" — structured, human-readable workflows that translate operator SOPs into machine-executable procedures, binding live data, applying compliance guardrails, deterministic logic. Claims 80–90% end-to-end ticket resolution, CSAT 4.8/5, 40% human-workload reduction. Reports one multi-brand operator integrated across three platforms in three weeks, 65% automation by end of month one and 82% by week six. Emphasises pre-built iGaming-native integrations to avoid months of custom API work. |
-| **BetHarmony** (Symphony Solutions) | iGaming AI agent for sportsbook and casino; multilingual conversational support across markets through a single AI layer. Claims 50–70% support-workload reduction with compliance and audit trails. |
-| **Lorikeet** | AI support for sports betting and online gaming; claims end-to-end resolution of regulated player-service contacts including deposit/withdrawal status, KYC and source-of-funds, bonus and bet disputes, and RG escalations across chat, email, voice, SMS, WhatsApp. |
-| **Ada** | Conversational AI for gaming with an explicit responsible-gaming posture — detects distress and self-exclusion signals and escalates deterministically to trained humans. |
-| **Zendesk** | Horizontal helpdesk with a dedicated iGaming and betting vertical. |
-| **Slotegrator (Moneygrator)** | Narrower — automated payment management and payment-friction handling. |
-| **Avenga** | Adjacent — KYC/AML automation, fraud detection, risk monitoring, payments, engagement. |
+| **Back office** | The operator's internal system holding accounts, balances, payments, bonuses |
+| **Capability** | One specific question we can ask an operator's systems. Operators support different sets |
+| **Cooling-off** | A voluntary short break from gambling a player has set |
+| **Escalate / hand over** | Give the conversation to a human, with context |
+| **KYC** | Identity and document checks gambling operators are legally required to run |
+| **AML** | Anti-money-laundering checks, including source-of-funds questions |
+| **Inducement** | Wording encouraging further gambling. Regulated; restricted or banned in some markets |
+| **Operator** | A gambling company — our customer |
+| **Player** | The operator's customer — the person in the conversation |
+| **Procedure** | A written, versioned document describing how one kind of question is handled |
+| **Rehearsal / dry run** | Running a procedure against real conversations and recording what it *would* have said |
+| **RG** | Responsible gambling — protecting players from gambling harm. A legal duty |
+| **Self-exclusion** | A player formally barring themselves from gambling, often market-wide |
+| **Wagering progress** | How much of a bonus's play-through requirement a player has completed |
 
-## 15.2 What the research validates in this design
-
-| Finding | Where it lands |
-|---|---|
-| The declarative-procedure approach is the category-defining architecture, not our invention — the benchmark competitor markets exactly this, framed as encoding operator SOPs | Part 5. Convergent, so we compete on execution: author-time provability (§5.3), capability degradation (§6), and the post-gate (§4.3) are where we go further |
-| Deterministic escalation on distress/self-exclusion signals is an explicit market expectation, described as supporting compliance obligations rather than replacing duty of care | §4.1 priority 4, FR-47–49 |
-| Sentiment-triggered escalation is already marketed — e.g. escalating a player who repeatedly contacts support after losing deposits | §4.2. Our differentiation is graduating the response rather than binary routing, and separating distress from frustration |
-| Pre-built integrations are the stated onboarding accelerant; months of custom API work is the thing buyers fear | §6, §9.4. Capability contracts are how we get there without pre-building every operator platform |
-| Vendors claim 80–90% automation; one reports 65% at month one rising to 82% by week six | Part 12 and the phase targets. **Read-only V1 cannot reach these**, which is why Requirements Part 5 sets 35–50% and V2 is where the number moves |
-| Model routing with a small classifier front-end is standard 2026 practice, cutting inference cost 40–70% with no measurable quality drop on most requests | Part 8. Our variant adds a deterministic engine between classification and composition, so a large share of the work costs no tokens |
-| Multi-tier deployment — frontier for high-stakes reasoning, mid-tier for everyday, small for high-volume classification — is now the production norm | §8.1 |
-
-## 15.3 The honest read on differentiation
-
-The competitor set is strong and the architecture is convergent. Procedure engines, RG escalation, and integration breadth are table stakes, not differentiators. The places this design can actually win:
-
-1. **Provability over assertion.** Reachability analysis proving no path discloses account data without identity verification (§5.3) is an artifact you hand a regulator. Competitors market "deterministic logic" and "auditable"; none publish a mechanism.
-2. **Graduated emotional handling** with distress separated from frustration and per-market calibration. The market treats sentiment as a routing trigger; §4.2 treats it as a modulator with an explicit RG carve-out.
-3. **Capability degradation as a product feature.** Telling a tenant "you get six of nine procedures, and here is exactly why" beats a failed integration, and it lets us onboard operators whose back office is thin.
-4. **Cost transparency from metered actuals** (Part 12) rather than an ROI slider.
-
-**The uncomfortable one:** a read-only V1 concedes the category's headline claim. V1 must win on accuracy, compliance posture, and escalation quality, and V2 must land — that is the strategic bet the phasing makes explicit.
-
-## 15.4 Sources
+# Appendix B — References
 
 **Competitive and market research**
 - [How Cevro AI is Transforming iGaming Player Support — iGaming News](https://igaming.news/news/2026-02-24/how-cevro-ai-is-transforming-igaming-player-support)
@@ -852,7 +1661,6 @@ The competitor set is strong and the architecture is convergent. Procedure engin
 - [iGaming Customer Support AI Automation 2026 — Symphony Solutions](https://symphony-solutions.com/insights/igaming-customer-support-ai-automation-2026)
 - [AI-Powered iGaming & Betting Support Software — Zendesk](https://www.zendesk.com/industries/igaming-and-betting/)
 - [AI in iGaming: Use Cases to Watch in 2026 — GR8 Tech](https://gr8.tech/blog/ai-in-igaming-a-look-into-machine-learning-and-personalized-gaming-experiences/)
-- [AI in Gambling: How Casinos Use AI in 2026 — AffRoom](https://affroom.com/blog/ai-gambling-industry/)
 
 **Model routing and cost architecture**
 - [AI Model Routing Explained: Cut LLM Costs (2026) — Inworld AI](https://inworld.ai/resources/ai-model-routing-cost-reduction)
@@ -861,16 +1669,15 @@ The competitor set is strong and the architecture is convergent. Procedure engin
 - [AI Agent Model Routing and Dynamic Model Selection Strategies — Zylos Research](https://zylos.ai/research/2026-03-02-ai-agent-model-routing/)
 - [AI Agent Cost Optimization: Token Economics and FinOps in Production — Zylos Research](https://zylos.ai/research/2026-02-19-ai-agent-cost-optimization-token-economics/)
 
-**Model pricing and platform capabilities** — Anthropic model catalogue and pricing as of August 2026: Claude Haiku 4.5 $1/$5, Claude Sonnet 5 $3/$15 (intro $2/$10 through 31 Aug 2026), Claude Opus 5 $5/$25 per Mtok. Cache reads ~0.1× input; cache writes 1.25× (5-minute TTL). Batch API −50%. Minimum cacheable prefix: Opus 5 512 tokens, Sonnet 5 1,024, Haiku 4.5 4,096.
+**Model pricing** — Anthropic catalogue, August 2026: Claude Haiku 4.5 $1/$5, Claude Sonnet 5 $3/$15 (introductory $2/$10 through 31 Aug 2026), Claude Opus 5 $5/$25 per million tokens. Cache reads ~0.1× input; cache writes 1.25× at 5-minute TTL. Batch processing −50%. Minimum cacheable prefix: Opus 5 512 tokens, Sonnet 5 1,024, Haiku 4.5 4,096.
 
----
+# Appendix C — Open questions
 
-## Appendix — Open questions carried from Requirements
-
-1. **Channels and helpdesks** — determines adapter implementations and which rich affordances exist. Design is adapter-neutral; selection is the next discussion.
-2. **Back-office diversity** — how many platforms, and can they serve the read steps? §6 is built to survive a bad answer, but the baseline library's value depends on it.
-3. **Model hosting and data residency** — §9.1 assumes regional cells; confirm the jurisdictions.
-4. **Identity assurance** — what satisfies `verify_identity` per jurisdiction (FR-16).
-5. **Procedure authoring surface** — YAML, generated UI, or structured prose. §5.1 shows the underlying model; the surface determines whether NFR-29 is real.
-6. **Design partner** — a single-market first tenant is a materially easier V1.
-7. **Pricing model** — per-resolution, per-seat, or per-volume changes what Part 11 must meter from day one.
+1. **Which chat channels and help desks.** Determines adapter implementations. The design is adapter-neutral; the choice is the next discussion.
+2. **How different operator back offices are.** Can they serve the reads? **And for V2: can they accept an external reference on writes?** Without one, reconciliation is impossible and write capabilities cannot be granted.
+3. **Where models run and where data lives.** The regional-cell design assumes residency constraints; confirm the jurisdictions.
+4. **What counts as verifying identity**, per jurisdiction.
+5. **How procedures are authored** — a text format, a generated UI, or structured prose. Decides whether non-engineer authoring is real or aspirational, and it is also the demo that wins deals.
+6. **First customer.** A single-market first tenant is a materially easier V1.
+7. **Pricing model.** Note that cost per automated resolution is the metric that improves across phases, and the one to price against.
+8. **V3 only: can the first tenant supply RG status synchronously at send time?** If not, proactive plays are unavailable to them at any price.
