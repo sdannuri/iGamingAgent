@@ -97,11 +97,13 @@ The dominant risk changes character at each boundary. That, more than the featur
 
 ## 2.1 The problem
 
-Gambling operators handle very large support volumes — a mid-size operator runs 80,000–100,000 live chats a month across several markets and languages. The volume concentrates in a small number of repeated operational questions: where is my deposit, where is my withdrawal, why is my account not verified, where is my bonus, why can't I log in.
+Gambling operators handle very large support volumes — a mid-size operator runs 80,000–100,000 live chats a month across several markets and languages. The volume concentrates: a modest set of question types produces most of it — where is my money, why is my account restricted, what happened to my bonus, why did my bet settle that way, why can't I get in.
 
-These are not information requests. They are questions about the state of one person's money, answerable only by reading that person's account. A chatbot that recites the bonus terms is useless; the player wants to know how much further *they* have to wager.
+**Concentration is not simplicity.** One question fans out into many distinct causes, each needing a different lookup. "Where is my deposit" resolves five different ways depending on whether the bank declined it, the payment pipeline dropped it, it is a phantom authorisation that never reached us, it went to the wrong crypto network, or a provider outage swallowed it. Telling them apart is the work. The mix also shifts by vertical: a casino's heaviest traffic is deposits, bonuses and verification, while a sportsbook's is settlement disputes, cash-out failures and rejected in-play bets — a different set of systems entirely.
 
-Answering them needs three things a general-purpose assistant does not have: a live connection to the operator's back office, certainty about who the player is, and rules about what may be said to whom.
+These are not information requests, and they are not all account questions. Answering them means reading whichever live system holds the truth: the player's account, but equally the game provider's round log, the trading system's settlement audit, the payment provider's decline record, the identity vendor's case state, or the version of the terms in force when the disputed event happened. A chatbot that recites the bonus terms is useless; the player wants to know how much further *they* have to wager, or why *their* accumulator settled the way it did.
+
+Answering them needs four things a general-purpose assistant does not have: live connections across the operator's whole operational surface, certainty about who the player is, rules about what may be said to whom, and the ability to retrieve state **as it was at the moment of the disputed event** rather than as it is now.
 
 ## 2.2 What makes iGaming different
 

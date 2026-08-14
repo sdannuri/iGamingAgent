@@ -12,9 +12,14 @@
 
 ## The problem
 
-A mid-size gambling operator handles 80,000–100,000 live chats a month. Most of it is the same five questions: where is my deposit, where is my withdrawal, why is my account not verified, where is my bonus, why can't I log in.
+A mid-size gambling operator handles 80,000–100,000 live chats a month, and the volume concentrates. A modest set of question types produces most of it: where is my money, why is my account restricted, what happened to my bonus, why did my bet settle that way, why can't I get in.
 
-None of these can be answered from a help centre. They are questions about the state of one person's money, and the only honest answer requires reading that person's account. So operators throw people at it — expensive, slow at 2am, and worst exactly when volume spikes on a Cup final.
+**But a concentrated question is not a simple one.** "Where is my deposit" has at least five different root causes — the bank declined it, it stopped somewhere in the payment pipeline, it is a phantom charge that never reached us, it went to the wrong crypto network, or a provider outage swallowed it. Each needs a different lookup and produces a different answer, and telling them apart is the entire job. That is why one question becomes sixteen payment requirements.
+
+The mix also shifts by vertical. A casino operator's heaviest traffic is deposits, bonuses and verification. A sportsbook's is settlement disputes, cash-out failures and rejected in-play bets — a completely different set of systems to read.
+
+What every one of these has in common is that **none can be answered from a help centre.** They are questions about the state of one person's money, one specific game round, or one specific bet, and an honest answer requires reading the live system that holds it. So operators throw people at the problem — expensive, slow at 2am, and worst exactly when volume spikes on a cup final.
+
 
 Existing chatbots make this worse. They recite the bonus terms to someone who wants to know their own wagering progress, and the player ends up in the queue anyway, angrier.
 
