@@ -3,16 +3,6 @@
 **Owner:** [TBC]  ·  **Status:** Draft, for review
 **Reviewers needed:** Compliance, Engineering, Fraud/Payments, Commercial
 
-| Version | Date | Change |
-|---|---|---|
-| 0.1 | — | First pass. Payments and bonus only, single operator |
-| 0.2 | — | Multi-tenant. Split read and write phases |
-| 1.0 | — | Added sportsbook and casino after the domain review. Added the do-not-automate list |
-| 2.0 | 14 Aug 2026 | Full requirement set (117). Restructured around modules. Moved API detail to Appendix B |
-
-Technical design lives in `Design.md`. This document is the what and the why; that one is the how.
-
----
 
 ## 1. Why we're doing this
 
@@ -26,7 +16,6 @@ What they have in common is that none of them can be answered from a help centre
 
 Existing chatbots have generally made this worse rather than better. They recite the bonus terms at someone who wants to know their own wagering progress, and the player ends up in the queue anyway, now annoyed.
 
-> **Worth flagging up front:** the concentration claim above comes from published operator case studies, not our own data. Before we commit to the sequencing in §11 we should get a real ticket export from the first design partner. If their top ten intents cover less than about 60% of volume, our module priorities are wrong and we should re-order them. This is cheap to check and expensive to get wrong.
 
 ---
 
@@ -62,31 +51,22 @@ That last row is the one that actually matters commercially, and it's the one we
 | Cost far less than a person | Per contact, against a $3–5 human baseline | ~$0.10 |
 | Survive the big days | Concurrent chats on a major fixture | 10,000+ |
 
-### The two resolution numbers
-
-This has come up in every review so far, so writing it down properly.
-
-About a third of inbound can never be contained. Roughly 20–25% has to reach a human by rule — complaints, distress signals, AML holds, disputed settlements, jackpot claims, all listed in §8. Another 10–15% needs a procedure that particular operator's systems can't support (see §10). That leaves about 65% eligible, and 65% × 85% gets you to roughly 55% contained.
-
-We publish both numbers because the market advertises the first and operators measure the second. A competitor's "80–90% automation" headline sets the expectation. Then the ops dashboard reports tickets closed without an agent, which is the contained rate, and we're 30 points short of a number we never actually promised. That argument happens in month three unless we head it off in the contract.
-
-The subtler problem is that one blended figure scores correct behaviour as failure. When the agent catches a distressed player and gets them to a trained officer in seconds, that's the product working exactly as intended, and it counts as a miss. Same when it opens a complaint record and starts the statutory clock.
-
-Someone senior needs to be willing to say that to the first customer, out loud, in the room. If nobody will, the fallback is to contract on eligible-resolution only and list the exclusions explicitly. That's open question 2 in §12.
-
 ---
 
 ## 4. Who we're building for
 
+Two people actually talk to this agent.
+
 | | What they want | What hurts now | What they get |
 |---|---|---|---|
-| **Player** | An answer about their own money, now | Slow replies, scripts, no idea why a withdrawal is stuck | Real account data, their language, 3am |
-| **VIP / Retention Manager** | Keep the high-value players happy | VIPs queued behind routine tickets. Hosts promise things over WhatsApp that never reach the CRM | Tier recognition, priority routing, handoff with context |
-| **Compliance / RG Officer** | No breaches, no missed harm signals | Invented terms, promotional language, distress that nobody spotted | Deterministic triggers, approved wording only, an audit trail that survives a review |
-| **Support Ops Lead** | Low queue times, controlled cost | Seasonal churn, tournament spikes | Help-desk integration, honest capability reporting, clean fallback |
-| **Fraud / Payments** | Stop takeover without blocking real players | Support desks are the softest social-engineering target in the business | Structural blocks on payout changes, step-up checks, evidence packs |
+| **Player** | An answer about their own money, right now | Slow replies, scripted answers, and no idea why a withdrawal is stuck or what would unstick it. Being told the terms when they asked about their account | Real account data instead of policy text, in their own language, at 3am. A straight answer about what's blocking them and what clears it |
+| **VIP player** | To be recognised without having to explain who they are, and answers that reflect the terms they actually have rather than the published ones | Queued behind routine tickets. Quoted standard limits when theirs are different. Chasing a host who promised something over WhatsApp that never reached the CRM | Instant tier recognition, priority routing, their real caps and entitlements, and a handoff to their own host with the context already attached |
 
-The Fraud persona was a late addition. It came out of the domain review, and in hindsight it should have been there from the start — a meaningful chunk of Module F exists because of that conversation.
+The VIP row has a hard edge that's worth stating in the persona rather than burying in a requirement. Tier changes **how fast** we respond and **who** the conversation goes to. It never changes a remedy, a goodwill ceiling, an RG threshold or a verification gate. That's CMP-06, it's enforced as a runtime assertion with a negative-test suite behind it, and it exists because internal audit and regulators test for exactly that difference.
+
+The practical consequence is that VIP-01 reads the *assigned* tier rather than deriving it from turnover. A large share of real VIPs sit on manual overrides — retained after a bad month, poached from a competitor and dropped straight into the top tier, grandfathered from a legacy programme. An agent that works tier out from deposit volume gets it wrong for precisely the players who complain hardest.
+
+Compliance, support operations and fraud aren't listed here because they don't use the agent — they buy it, govern it, or clean up after it. Their requirements run through the document rather than sitting in this table: compliance and responsible gambling in §7 and §8, operations in §9 and §10, fraud across Module F and the payout-change controls in Module A.
 
 ---
 
