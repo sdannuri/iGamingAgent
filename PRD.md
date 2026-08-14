@@ -42,8 +42,8 @@ That last row is the one that actually matters commercially, and it's the one we
 
 | Goal | Measure | Target |
 |---|---|---|
-| Automate what the agent is allowed to handle | Eligible-resolution rate — of the contacts it may resolve, the share it closes without a human | 80–90% by V2 |
-| Reduce total human workload | Contained rate — of all inbound, the share that never reaches a human. Lower on purpose, because complaints, harm signals and AML holds always go to a person | 50–55% by V2 |
+| Automate what the agent is allowed to handle | Eligible-resolution rate — of the contacts it may resolve, the share it closes without a human | 80–90% at full scope |
+| Reduce total human workload | Contained rate — of all inbound, the share that never reaches a human. Lower on purpose, because complaints, harm signals and AML holds always go to a person | 50–55% at full scope |
 | Be right about people's money | Wrong-answer rate on account questions | Under 0.5% |
 | Feel instant | Time to first feedback | Under 1s |
 | Answer fast enough | Simple questions ~2s, investigations 5–8s | See §9 |
@@ -72,7 +72,7 @@ Compliance, support operations and fraud aren't listed here because they don't u
 
 ## 5. Scope
 
-**In:** inbound player support over chat, with the channel abstracted so we can add more later. Reading live operator systems and answering from them. Creating records — cases, complaints, evidence holds, document submissions. Protective actions the player asks for, from V1. Account-changing actions behind guardrails, from V2. Agent-initiated contact, V3.
+**In:** inbound player support over chat, with the channel abstracted so we can add more later. Reading live operator systems and answering from them. Creating records — cases, complaints, evidence holds, document submissions. Protective actions the player asks for. Account-changing actions behind guardrails. Agent-initiated contact.
 
 **Out:** deciding disputes. Adjudicating game outcomes. Ruling on whether a bet settled correctly. Any decision that awards or confiscates money without a human. Marketing campaign management. Acquisition and onboarding flows. Everything in §8.
 
@@ -93,12 +93,12 @@ The third one is easy to nod along to in a sales call and hard to actually staff
 
 Notes column is only filled in where there's something a reader needs. Most rows are self-explanatory and don't have one.
 
-**Phases:**
+The Type column says what kind of thing each requirement is, which matters because the safety treatment differs sharply between them:
 
-- **V1** — reads and explains. Also creates records: cases, complaints, evidence holds, uploads. No money, no entitlement.
-- **V1\*** — protective actions. Restrictive only, one-way, no amount involved. Set or lower a limit, take a break, self-exclude, freeze withdrawals. Shipped early deliberately, see §7.2.
-- **V2** — changes the account in a permissive or money-moving direction.
-- **V3** — the agent starts the conversation.
+- **Read** — reads live systems and explains. Escalates and opens cases where it should. No money, no entitlement, nothing on the account changes.
+- **Protective** — a restrictive, one-way action the player asked for. Set or lower a limit, take a break, self-exclude, freeze withdrawals. No amount involved and no wrong direction. Treated differently from every other action, for the reason in §7.2.
+- **Changes account** — a permissive or money-moving change. Grant a bonus, re-credit, raise a limit, change credentials, add a payout destination.
+- **Proactive** — the agent starts the conversation rather than answering one.
 
 ---
 
@@ -108,24 +108,24 @@ Everything between the player's bank and their balance. Highest volume module, a
 
 Needs from the operator: deposit and withdrawal records, payment provider decline data, live payment-method config, payout limits.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| PAY-01 | Card decline decoder | Explains a failed payment in plain words — no funds, bank blocked gambling, security check abandoned — and says whether the bank or we caused it. Points to a method that actually works for that country and card. | Biggest single payment driver. "Try again" generates a second ticket and can trigger a velocity block | V1 |
-| PAY-02 | Withdrawal status tracker | Finds the exact stage a payout has reached and gives an ETA from the operator's real batch cut-off rather than a canned "3–5 days". Opens a case if it's past SLA. | | V1 |
-| PAY-03 | Withdrawable balance breakdown | Splits the wallet into cash, bonus, locked cash, money tied up in open bets, pending payouts. States what can actually be withdrawn today and the biggest blocker. Shows what withdrawing now would forfeit. | Most "your maths is wrong" tickets are this. The lobby shows one number and the cashier shows another and nobody has ever explained the gap | V1 |
-| PAY-04 | Missing deposit tracer | Follows a missing deposit across our ledger, the provider and the gateway, and says where it stopped. | | V1 |
-| PAY-05 | Duplicate charge explainer | Distinguishes a real double charge from a phantom pending authorisation that will drop off in a few days. | Stops chargebacks being filed against charges that never happened | V1 |
-| PAY-06 | Return-to-source router | Explains which card or wallet a payout must go back to and why one withdrawal split across several. Flags deposit-only methods. | | V1 |
-| PAY-07 | Crypto deposit tracer | Checks confirmations against the network threshold. Diagnoses wrong-network sends, missing memo tags, underpayments. Never promises recovery. | Most crypto errors are genuinely unrecoverable and a false promise here becomes a complaint | V1 |
-| PAY-08 | Withdrawal cancellation gate | Handles "cancel my withdrawal and put it back". Checks market and RG status first. Where reversal is banned or the player is flagged, refuses and explains, and never offers it unprompted. | Prohibited in UK and Ontario. "You can cancel and keep playing" is the most natural helpful sentence in the whole product and a licence breach in London | V2 |
-| PAY-09 | Payout allowance calculator | States remaining daily, weekly and monthly allowance and the next reset, reading the caps on that specific player rather than the tier table. | VIPs sit on manual overrides. Quoting the tier table gives the wrong answer to the people who complain loudest | V1 |
-| PAY-10 | Payment method guidance | Lists what's actually live for that player's country, currency and tier, from the account's real config rather than the marketing page. | | V1 |
-| PAY-11 | Provider outage routing | On a known outage, says it's our problem, tells the player not to retry, offers a working alternative. | Retries during an outage compound decline rates and trigger fraud blocks. A 20-minute incident becomes a week-long account problem | V1, notify V3 |
-| PAY-12 | Currency and fee explainer | Explains the gap between what was entered and what arrived, quoting the rate stamped on that transaction rather than today's. | | V1 |
-| PAY-13 | Payment method manager | Lets a player manage saved deposit methods. Adding or changing a payout destination always needs step-up and proof of ownership. | Getting new bank details onto a verified account is the attacker's whole objective | V2 |
-| PAY-14 | Bounced payout re-issue | Names the field that failed, collects corrections under step-up, re-queues through the normal risk path. | | V2 |
-| PAY-15 | Chargeback containment | Recognises a card dispute, confirms only that the account is restricted, hands over at high priority. No merits, no evidence, never offers money to make it go away. | Offering a refund to withdraw a dispute breaches scheme rules and damages our own representment | V1 |
-| PAY-16 | EDD hold status | Confirms a large withdrawal is under review and lists only the documents Compliance formally asked for. No threshold, no trigger, no timeline. | Explaining why the review fired can be a criminal offence. See §8 | V1 |
+| PAY-01 | Card decline decoder | Explains a failed payment in plain words — no funds, bank blocked gambling, security check abandoned — and says whether the bank or we caused it. Points to a method that actually works for that country and card. | Biggest single payment driver. "Try again" generates a second ticket and can trigger a velocity block | Read |
+| PAY-02 | Withdrawal status tracker | Finds the exact stage a payout has reached and gives an ETA from the operator's real batch cut-off rather than a canned "3–5 days". Opens a case if it's past SLA. |  | Read |
+| PAY-03 | Withdrawable balance breakdown | Splits the wallet into cash, bonus, locked cash, money tied up in open bets, pending payouts. States what can actually be withdrawn today and the biggest blocker. Shows what withdrawing now would forfeit. | Most "your maths is wrong" tickets are this. The lobby shows one number and the cashier shows another and nobody has ever explained the gap | Read |
+| PAY-04 | Missing deposit tracer | Follows a missing deposit across our ledger, the provider and the gateway, and says where it stopped. |  | Read |
+| PAY-05 | Duplicate charge explainer | Distinguishes a real double charge from a phantom pending authorisation that will drop off in a few days. | Stops chargebacks being filed against charges that never happened | Read |
+| PAY-06 | Return-to-source router | Explains which card or wallet a payout must go back to and why one withdrawal split across several. Flags deposit-only methods. |  | Read |
+| PAY-07 | Crypto deposit tracer | Checks confirmations against the network threshold. Diagnoses wrong-network sends, missing memo tags, underpayments. Never promises recovery. | Most crypto errors are genuinely unrecoverable and a false promise here becomes a complaint | Read |
+| PAY-08 | Withdrawal cancellation gate | Handles "cancel my withdrawal and put it back". Checks market and RG status first. Where reversal is banned or the player is flagged, refuses and explains, and never offers it unprompted. | Prohibited in UK and Ontario. "You can cancel and keep playing" is the most natural helpful sentence in the whole product and a licence breach in London | Changes account |
+| PAY-09 | Payout allowance calculator | States remaining daily, weekly and monthly allowance and the next reset, reading the caps on that specific player rather than the tier table. | VIPs sit on manual overrides. Quoting the tier table gives the wrong answer to the people who complain loudest | Read |
+| PAY-10 | Payment method guidance | Lists what's actually live for that player's country, currency and tier, from the account's real config rather than the marketing page. |  | Read |
+| PAY-11 | Provider outage routing | On a known outage, says it's our problem, tells the player not to retry, offers a working alternative. | Retries during an outage compound decline rates and trigger fraud blocks. A 20-minute incident becomes a week-long account problem | Read / proactive |
+| PAY-12 | Currency and fee explainer | Explains the gap between what was entered and what arrived, quoting the rate stamped on that transaction rather than today's. |  | Read |
+| PAY-13 | Payment method manager | Lets a player manage saved deposit methods. Adding or changing a payout destination always needs step-up and proof of ownership. | Getting new bank details onto a verified account is the attacker's whole objective | Changes account |
+| PAY-14 | Bounced payout re-issue | Names the field that failed, collects corrections under step-up, re-queues through the normal risk path. |  | Changes account |
+| PAY-15 | Chargeback containment | Recognises a card dispute, confirms only that the account is restricted, hands over at high priority. No merits, no evidence, never offers money to make it go away. | Offering a refund to withdraw a dispute breaches scheme rules and damages our own representment | Read |
+| PAY-16 | EDD hold status | Confirms a large withdrawal is under review and lists only the documents Compliance formally asked for. No threshold, no trigger, no timeline. | Explaining why the review fired can be a criminal offence. See §8 | Read |
 
 ---
 
@@ -133,20 +133,20 @@ Needs from the operator: deposit and withdrawal records, payment provider declin
 
 Needs from the operator: bonus engine state, campaign terms with version history, game weightings, free-round allocation records.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| BON-01 | Wagering progress tracker | Rebuilds a bet-by-bet ledger showing how much each round moved the requirement after game weighting. States the basis actually recorded on that campaign. | "40× bonus" and "40× deposit+bonus" differ by exactly 2× in real money. Getting this wrong misrepresents a contract term | V1 |
-| BON-02 | Bonus code failure diagnostician | Names the exact condition that failed and offers an alternative they genuinely qualify for. | | V1 |
-| BON-03 | Missing deposit-match investigator | Works out whether the match should have granted at all. Issues it where the failure was ours and no prior grant exists. | Bonus engines lag 30–90 seconds. Half of these are impatience | V2 |
-| BON-04 | Free spin delivery check | Separates "granted here but never allocated by the provider" from "wrong game or stake size" from "already played". | | V2 |
-| BON-05 | Free spin winnings explainer | Explains total win, whether winnings carry their own wagering, and whether a conversion cap truncated it. Quotes the terms in force at grant. | | V1 |
-| BON-06 | Bonus expiry countdown | Exact expiry in the player's timezone, turnover remaining, and that expiry destroys the bonus and everything won from it. | Players assume only the unused part goes. Finding out afterwards is a complaint | V1, countdown V3 |
-| BON-07 | Cashback statement rebuild | Rebuilds the settled cashback line by line. Reads the settled figure, never recalculates. | | V1 |
-| BON-08 | Guarded bonus forfeiture | Shows exactly what will be destroyed before doing it, and requires typed confirmation. | Irreversible decision people make in thirty seconds while frustrated | V2 |
-| BON-09 | Tournament reconciliation | Explains scoring, reconciles qualifying rounds against displayed position including leaderboard lag. | Most disputes here are the lag, not the scoring | V1 |
-| BON-10 | Max-bet breach case file | Presents the breaching round, stake, time and clause version factually. Never reinstates, never says the confiscation is final. | Detected retroactively at withdrawal, so these arrive furious. The remedy is genuinely disputed — some operators void only the excess | V1 |
-| BON-11 | Promotional restriction statement | Confirms a restriction applies, in approved wording, and gives the complaint route. Never says what triggered it. | Detection logic circulates on affiliate forums within a day of being explained once | V1 |
-| BON-12 | Missions and quests tracker | Explains why a step hasn't ticked and claims completed rewards. | | V2 |
+| BON-01 | Wagering progress tracker | Rebuilds a bet-by-bet ledger showing how much each round moved the requirement after game weighting. States the basis actually recorded on that campaign. | "40× bonus" and "40× deposit+bonus" differ by exactly 2× in real money. Getting this wrong misrepresents a contract term | Read |
+| BON-02 | Bonus code failure diagnostician | Names the exact condition that failed and offers an alternative they genuinely qualify for. |  | Read |
+| BON-03 | Missing deposit-match investigator | Works out whether the match should have granted at all. Issues it where the failure was ours and no prior grant exists. | Bonus engines lag 30–90 seconds. Half of these are impatience | Changes account |
+| BON-04 | Free spin delivery check | Separates "granted here but never allocated by the provider" from "wrong game or stake size" from "already played". |  | Changes account |
+| BON-05 | Free spin winnings explainer | Explains total win, whether winnings carry their own wagering, and whether a conversion cap truncated it. Quotes the terms in force at grant. |  | Read |
+| BON-06 | Bonus expiry countdown | Exact expiry in the player's timezone, turnover remaining, and that expiry destroys the bonus and everything won from it. | Players assume only the unused part goes. Finding out afterwards is a complaint | Read / proactive |
+| BON-07 | Cashback statement rebuild | Rebuilds the settled cashback line by line. Reads the settled figure, never recalculates. |  | Read |
+| BON-08 | Guarded bonus forfeiture | Shows exactly what will be destroyed before doing it, and requires typed confirmation. | Irreversible decision people make in thirty seconds while frustrated | Changes account |
+| BON-09 | Tournament reconciliation | Explains scoring, reconciles qualifying rounds against displayed position including leaderboard lag. | Most disputes here are the lag, not the scoring | Read |
+| BON-10 | Max-bet breach case file | Presents the breaching round, stake, time and clause version factually. Never reinstates, never says the confiscation is final. | Detected retroactively at withdrawal, so these arrive furious. The remedy is genuinely disputed — some operators void only the excess | Read |
+| BON-11 | Promotional restriction statement | Confirms a restriction applies, in approved wording, and gives the complaint route. Never says what triggered it. | Detection logic circulates on affiliate forums within a day of being explained once | Read |
+| BON-12 | Missions and quests tracker | Explains why a step hasn't ticked and claims completed rewards. |  | Changes account |
 
 ---
 
@@ -160,23 +160,23 @@ Needs from the operator: bet and leg records, settlement audit trail, versioned 
 
 Gating dependency: this whole module needs the operator to supply versioned rule text. If they can't, most of it doesn't ship for them. See open question 5.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| SPRT-01 | Open bet tracker | Lists open and recently settled slips and names the leg holding things up. | Highest volume sportsbook question on a busy Saturday | V1 |
-| SPRT-02 | Settlement verification | Pulls the trading system's audit record and the rule frozen on that bet, and explains the settlement against the rule actually applied. | Never from the model's own knowledge of sport. It will be fluent and wrong, and the wrong answer is in writing | V1 |
-| SPRT-03 | Void and Rule 4 explainer | Explains why a selection voided and shows the recalculated return from the settlement engine. | The maths must never be computed by the model | V1 |
-| SPRT-04 | Cash-out failure diagnostics | Explains a failed cash-out and rebuilds partial cash-out maths. Confirms a cashed-out bet is final. | Timing evidence settles what is otherwise an unwinnable argument | V1 |
-| SPRT-05 | Bet rejection explainer | Explains a declined or amended bet from the rejection log. Where the real cause is account-level stake limiting, gives the neutral market-limit answer and hands off. | Exposing risk posture is directly monetisable by arbitrage groups | V1 |
-| SPRT-06 | Free bet and acca insurance | Explains stake-not-returned returns, qualification odds, exclusions, expiry. Re-issues only where an incident record proves a platform fault. | | V1, reissue V2 |
-| SPRT-07 | Bet builder leg void | Works out whether a voided leg collapsed to 1.00 with the rest standing, or voided the whole slip, from the policy on that specific slip. | Bet builder policy differs from standard accumulator policy. Assuming the general rule gives a confidently wrong answer | V1 |
-| SPRT-08 | Each-way and dead-heat calculator | Retrieves the place terms frozen at strike and the divisor applied, then walks through win and place parts separately. | A dead heat divides the stake and pays full odds. It does not halve the odds, and explaining it that way sounds authoritative and is wrong | V1 |
-| SPRT-09 | Postponed and abandoned events | Says whether the bet is void, standing or already resettled, quoting the clause verbatim. | Retrieval only. Void windows differ by sport, competition and operator | V1 |
-| SPRT-10 | Resettlement notifier | Explains a resettlement after an official result change. Positive ones confirmed. Clawbacks go to a human with the case pre-packaged. | | V1 |
-| SPRT-11 | Live stream entitlement | Checks entitlement and clears a stranded session locking the player out. | Time-critical. The match is on now | V1, reset V2 |
-| SPRT-12 | Bet history statement | Generates a filtered statement and delivers it through the authenticated channel, not the chat transcript. | | V1 |
-| SPRT-13 | Maximum payout cap disclosure | Shows the clause in force at strike and the uncapped theoretical return. States the cap isn't negotiable in chat. | Player finds out about the cap after the win of their life. One of the most-referred issues to dispute bodies | V1 |
-| SPRT-14 | Palpable error intake | Presents the clause and both prices without saying whether it was correctly applied. Opens a trading review and a complaint record. | Top driver of dispute referrals against sportsbooks. Defending it or conceding it both become evidence | V1 |
-| SPRT-15 | Integrity hold handling | Returns the approved holding statement and suppresses all settlement reasoning on that slip. Escalates silently. | | V1 |
+| SPRT-01 | Open bet tracker | Lists open and recently settled slips and names the leg holding things up. | Highest volume sportsbook question on a busy Saturday | Read |
+| SPRT-02 | Settlement verification | Pulls the trading system's audit record and the rule frozen on that bet, and explains the settlement against the rule actually applied. | Never from the model's own knowledge of sport. It will be fluent and wrong, and the wrong answer is in writing | Read |
+| SPRT-03 | Void and Rule 4 explainer | Explains why a selection voided and shows the recalculated return from the settlement engine. | The maths must never be computed by the model | Read |
+| SPRT-04 | Cash-out failure diagnostics | Explains a failed cash-out and rebuilds partial cash-out maths. Confirms a cashed-out bet is final. | Timing evidence settles what is otherwise an unwinnable argument | Read |
+| SPRT-05 | Bet rejection explainer | Explains a declined or amended bet from the rejection log. Where the real cause is account-level stake limiting, gives the neutral market-limit answer and hands off. | Exposing risk posture is directly monetisable by arbitrage groups | Read |
+| SPRT-06 | Free bet and acca insurance | Explains stake-not-returned returns, qualification odds, exclusions, expiry. Re-issues only where an incident record proves a platform fault. |  | Read / changes account |
+| SPRT-07 | Bet builder leg void | Works out whether a voided leg collapsed to 1.00 with the rest standing, or voided the whole slip, from the policy on that specific slip. | Bet builder policy differs from standard accumulator policy. Assuming the general rule gives a confidently wrong answer | Read |
+| SPRT-08 | Each-way and dead-heat calculator | Retrieves the place terms frozen at strike and the divisor applied, then walks through win and place parts separately. | A dead heat divides the stake and pays full odds. It does not halve the odds, and explaining it that way sounds authoritative and is wrong | Read |
+| SPRT-09 | Postponed and abandoned events | Says whether the bet is void, standing or already resettled, quoting the clause verbatim. | Retrieval only. Void windows differ by sport, competition and operator | Read |
+| SPRT-10 | Resettlement notifier | Explains a resettlement after an official result change. Positive ones confirmed. Clawbacks go to a human with the case pre-packaged. |  | Read |
+| SPRT-11 | Live stream entitlement | Checks entitlement and clears a stranded session locking the player out. | Time-critical. The match is on now | Read / changes account |
+| SPRT-12 | Bet history statement | Generates a filtered statement and delivers it through the authenticated channel, not the chat transcript. |  | Read |
+| SPRT-13 | Maximum payout cap disclosure | Shows the clause in force at strike and the uncapped theoretical return. States the cap isn't negotiable in chat. | Player finds out about the cap after the win of their life. One of the most-referred issues to dispute bodies | Read |
+| SPRT-14 | Palpable error intake | Presents the clause and both prices without saying whether it was correctly applied. Opens a trading review and a complaint record. | Top driver of dispute referrals against sportsbooks. Defending it or conceding it both become evidence | Read |
+| SPRT-15 | Integrity hold handling | Returns the approved holding statement and suppresses all settlement reasoning on that slip. Escalates silently. |  | Read |
 
 ---
 
@@ -186,21 +186,21 @@ Also new after the domain review. The unit of truth here is the game round, and 
 
 Needs from the operator: provider round logs, wallet ledger, game catalogue and certification data, live table status, incident register.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| CAS-01 | Disconnected round recovery | Classifies the round as paid, unsettled, still open, or rolled back by comparing the provider log against our ledger and the transaction status. | Most common casino ticket. Also the one most likely to double-credit if handled naively. A losing spin isn't refundable — the outcome was fixed when the stake was accepted | V1, resolve V2 |
-| CAS-02 | Session balance reconciliation | Rebuilds a plain session statement separating turnover from money actually spent. Routes to the RG check if the pattern suggests chasing. | Players confuse turnover with losses and arrive believing they lost ten times what they did | V1 |
-| CAS-03 | Game launch failure triage | Checks provider health before troubleshooting, so a known outage gets a status update rather than a clear-your-cache script. | | V1, notify V3 |
-| CAS-04 | Game availability explainer | Explains why a game disappeared and suggests certified alternatives. | A player insisting it worked from another country is logged as a spoofing signal, not argued with | V1 |
-| CAS-05 | Rules and paytable explainer | Answers mechanics questions from the title's live paytable for that market. | Vendor marketing copy describes a build the player may not be playing | V1 |
-| CAS-06 | RTP and fairness handler | Returns the RTP variant actually deployed for that brand and market, with the certification reference. Never says a game is "due" or the player was unlucky. | The same slot ships in several certified variants. Quoting the headline figure states a legally incorrect number | V1 |
-| CAS-07 | Live stream triage | Diagnoses buffering and "my bet wasn't accepted in time" and settles it from the round log. | | V1 |
-| CAS-08 | Table limits guidance | Explains a rejected stake and which limits are negotiable. None of the regulatory ones are. | | V1 |
-| CAS-09 | Live dealer dispute intake | Captures the claim, pulls the provider's game state, and places a video-retention hold. Never rules on whether the dealer erred. | The hold is the whole value. Retention windows are days, not months, so this has to happen in the first minutes | V1 |
-| CAS-10 | Autoplay and spin-speed | Explains why autoplay or turbo is unavailable. Read-only by design — the agent can never enable these. | Offering to enable a prohibited feature is a direct breach | V1 |
-| CAS-11 | Buy-feature enquiry | Confirms the purchase was debited and delivered as one round, and whether it was allowed under the active bonus. | Feature buys are commonly excluded and can forfeit winnings. Players rarely know | V1 |
-| CAS-12 | Malfunction detection | Spots candidate defects and raises a potential multi-player incident. May quote the malfunction clause, never uses it to void a win. | A defect affecting several players is a reportable incident, not a support ticket | V1 |
-| CAS-13 | Jackpot dispute | Explains qualification rules. For an actual hit reports "pending provider and compliance verification" only. | Never confirms it's payable, or the amount, or when. The provider holds and validates the pot | V1 |
+| CAS-01 | Disconnected round recovery | Classifies the round as paid, unsettled, still open, or rolled back by comparing the provider log against our ledger and the transaction status. | Most common casino ticket. Also the one most likely to double-credit if handled naively. A losing spin isn't refundable — the outcome was fixed when the stake was accepted | Read / changes account |
+| CAS-02 | Session balance reconciliation | Rebuilds a plain session statement separating turnover from money actually spent. Routes to the RG check if the pattern suggests chasing. | Players confuse turnover with losses and arrive believing they lost ten times what they did | Read |
+| CAS-03 | Game launch failure triage | Checks provider health before troubleshooting, so a known outage gets a status update rather than a clear-your-cache script. |  | Read / proactive |
+| CAS-04 | Game availability explainer | Explains why a game disappeared and suggests certified alternatives. | A player insisting it worked from another country is logged as a spoofing signal, not argued with | Read |
+| CAS-05 | Rules and paytable explainer | Answers mechanics questions from the title's live paytable for that market. | Vendor marketing copy describes a build the player may not be playing | Read |
+| CAS-06 | RTP and fairness handler | Returns the RTP variant actually deployed for that brand and market, with the certification reference. Never says a game is "due" or the player was unlucky. | The same slot ships in several certified variants. Quoting the headline figure states a legally incorrect number | Read |
+| CAS-07 | Live stream triage | Diagnoses buffering and "my bet wasn't accepted in time" and settles it from the round log. |  | Read |
+| CAS-08 | Table limits guidance | Explains a rejected stake and which limits are negotiable. None of the regulatory ones are. |  | Read |
+| CAS-09 | Live dealer dispute intake | Captures the claim, pulls the provider's game state, and places a video-retention hold. Never rules on whether the dealer erred. | The hold is the whole value. Retention windows are days, not months, so this has to happen in the first minutes | Read |
+| CAS-10 | Autoplay and spin-speed | Explains why autoplay or turbo is unavailable. Read-only by design — the agent can never enable these. | Offering to enable a prohibited feature is a direct breach | Read |
+| CAS-11 | Buy-feature enquiry | Confirms the purchase was debited and delivered as one round, and whether it was allowed under the active bonus. | Feature buys are commonly excluded and can forfeit winnings. Players rarely know | Read |
+| CAS-12 | Malfunction detection | Spots candidate defects and raises a potential multi-player incident. May quote the malfunction clause, never uses it to void a win. | A defect affecting several players is a reportable incident, not a support ticket | Read |
+| CAS-13 | Jackpot dispute | Explains qualification rules. For an actual hit reports "pending provider and compliance verification" only. | Never confirms it's payable, or the amount, or when. The provider holds and validates the pot | Read |
 
 ---
 
@@ -210,19 +210,19 @@ Needs from the operator: verification partner case state, document requirements 
 
 The split between disclosable and internal risk flags is not optional plumbing. It's the mechanism that makes KYC-09 enforceable rather than aspirational, and it needs to exist on the operator's side.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| KYC-01 | Verification status decoder | Translates rejections into plain words with the deadline remaining. | Vendor reject codes are unreadable, so players resubmit the same rejected document three times | V1 |
-| KYC-02 | Inline document upload | Upload widget in the chat for the exact document outstanding, with pre-checks before submission. | Biggest single deflection in this module. Turns explaining a rejection into resolving it | V1 |
-| KYC-03 | Pre-withdrawal readiness | Lists every outstanding requirement in one message rather than drip-feeding. VIP tier has no influence here. | Drip-feeding is the top driver of "I've sent you everything three times" | V1 |
-| KYC-04 | Requirements advisor | Answers "what counts as proof of address" from the accepted-document list for that market. | | V1 |
-| KYC-05 | Source of funds intake | Explains what's being asked for and lists acceptable evidence categories. No threshold, no hint at what would pass, no timeline. | Telling someone what evidence would pass is itself a control failure | V1 |
-| KYC-06 | Third-party funding guard | Detects an instrument not in the account holder's name and requests ownership evidence. Accepts no explanation as sufficient. | "It's my wife's card, she said it's fine" is a classic mule pattern, not a resolution | V1 |
-| KYC-07 | Identity amendment gatekeeper | Detects requests to change name, DOB, national ID, country or currency and executes none of them, ever. | A silent edit here defeats sanctions and self-exclusion matching | V1 |
-| KYC-08 | Duplicate account detection | Identifies linked accounts and says which stays active. Always checks the exclusion register first. | Most duplicates are innocent. The minority that aren't have exactly inverted money treatment | V1 |
-| KYC-09 | AML non-disclosure guardrail | Freezes generated output where the record carries a sanctions hit or open investigation, sends approved wording, escalates silently. No change in tone or reply speed. | Disclosure here is a criminal offence with personal liability. This is the canonical suppression control for the whole product | V1 |
-| KYC-10 | Underage containment | Suspends play and all money movement, hands to compliance, says nothing about the balance. | Inverse of a normal closure — stakes returned, winnings voided. An automation that closes and pays out does exactly the wrong thing | V1\* |
-| KYC-11 | Data request intake | Logs access and deletion requests, clock starting from the player's message, and explains mandatory retention up front. | | V1 |
+| KYC-01 | Verification status decoder | Translates rejections into plain words with the deadline remaining. | Vendor reject codes are unreadable, so players resubmit the same rejected document three times | Read |
+| KYC-02 | Inline document upload | Upload widget in the chat for the exact document outstanding, with pre-checks before submission. | Biggest single deflection in this module. Turns explaining a rejection into resolving it | Read |
+| KYC-03 | Pre-withdrawal readiness | Lists every outstanding requirement in one message rather than drip-feeding. VIP tier has no influence here. | Drip-feeding is the top driver of "I've sent you everything three times" | Read |
+| KYC-04 | Requirements advisor | Answers "what counts as proof of address" from the accepted-document list for that market. |  | Read |
+| KYC-05 | Source of funds intake | Explains what's being asked for and lists acceptable evidence categories. No threshold, no hint at what would pass, no timeline. | Telling someone what evidence would pass is itself a control failure | Read |
+| KYC-06 | Third-party funding guard | Detects an instrument not in the account holder's name and requests ownership evidence. Accepts no explanation as sufficient. | "It's my wife's card, she said it's fine" is a classic mule pattern, not a resolution | Read |
+| KYC-07 | Identity amendment gatekeeper | Detects requests to change name, DOB, national ID, country or currency and executes none of them, ever. | A silent edit here defeats sanctions and self-exclusion matching | Read |
+| KYC-08 | Duplicate account detection | Identifies linked accounts and says which stays active. Always checks the exclusion register first. | Most duplicates are innocent. The minority that aren't have exactly inverted money treatment | Read |
+| KYC-09 | AML non-disclosure guardrail | Freezes generated output where the record carries a sanctions hit or open investigation, sends approved wording, escalates silently. No change in tone or reply speed. | Disclosure here is a criminal offence with personal liability. This is the canonical suppression control for the whole product | Read |
+| KYC-10 | Underage containment | Suspends play and all money movement, hands to compliance, says nothing about the balance. | Inverse of a normal closure — stakes returned, winnings voided. An automation that closes and pays out does exactly the wrong thing | Protective |
+| KYC-11 | Data request intake | Logs access and deletion requests, clock starting from the player's message, and explains mandatory retention up front. |  | Read |
 
 ---
 
@@ -232,17 +232,17 @@ Split out of KYC and Platform during the domain review. The distinction: Module 
 
 Needs from the operator: authentication logs, lock ledger with disclosure classification, session and device records, location provider, message gateway logs.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| SEC-01 | Login failure triage | Classifies why they can't get in and resolves the one branch that's safe to self-serve. Reset links go to the email on file only, never one given in chat, and never in the same session as a contact change. | The takeover chain is: change the email, then reset the password. Breaking the sequence breaks the attack | V1, reset V2 |
-| SEC-02 | Lock reason disclosure router | Splits locks three ways — ordinary explained fully, RG to an officer, investigation gets the vague script. Triggers on what the system returns, not what the player asked. | The player asks about login and the system returns an investigation flag. That's the case that catches people out | V1 |
-| SEC-03 | 2FA and code diagnostics | Checks whether the code was delivered, blocked or bounced, and resends to the registered channel only. | "I lost my phone, send it to this number" is the most rehearsed script against gambling support desks | V1, factor change V2 |
-| SEC-04 | Location block resolver | Gives the one correct fix. For genuinely out-of-jurisdiction, explains play is unavailable. | Must be structurally incapable of advising anything that helps someone appear to be elsewhere | V1 |
-| SEC-05 | Step-up verification | Shared building block. Issues an out-of-band challenge and provides a pass/fail other requirements depend on. | Not a player-facing feature. Required before payout changes, re-issues, point redemption, session termination | V1 |
-| SEC-06 | Profile and contact update | Handles the fields a player may change themselves. Email changes need step-up plus a reversal notice to the old address. | The reversal notice is what tells a real player they're being taken over | V2 |
-| SEC-07 | Session and device resolver | Lists active sessions and ends others after step-up. Doubles as a self-service "is someone else in my account" check. | | V1\* |
-| SEC-08 | Takeover triage | Freeze withdrawals first, revoke sessions, force a reset, build a fraud case. Never decides whether losses are reimbursed. | Attackers monetise through payout, not login. Freezing withdrawals first is the only step that actually stops loss | V1\* |
-| SEC-09 | VPN advisory | Explains a rejected session and says to turn it off entirely. Can't answer "which VPN works". | Repeat patterned attempts go to the fraud signal store, not the support queue | V1 |
+| SEC-01 | Login failure triage | Classifies why they can't get in and resolves the one branch that's safe to self-serve. Reset links go to the email on file only, never one given in chat, and never in the same session as a contact change. | The takeover chain is: change the email, then reset the password. Breaking the sequence breaks the attack | Read / changes account |
+| SEC-02 | Lock reason disclosure router | Splits locks three ways — ordinary explained fully, RG to an officer, investigation gets the vague script. Triggers on what the system returns, not what the player asked. | The player asks about login and the system returns an investigation flag. That's the case that catches people out | Read |
+| SEC-03 | 2FA and code diagnostics | Checks whether the code was delivered, blocked or bounced, and resends to the registered channel only. | "I lost my phone, send it to this number" is the most rehearsed script against gambling support desks | Read / changes account |
+| SEC-04 | Location block resolver | Gives the one correct fix. For genuinely out-of-jurisdiction, explains play is unavailable. | Must be structurally incapable of advising anything that helps someone appear to be elsewhere | Read |
+| SEC-05 | Step-up verification | Shared building block. Issues an out-of-band challenge and provides a pass/fail other requirements depend on. | Not a player-facing feature. Required before payout changes, re-issues, point redemption, session termination | Read |
+| SEC-06 | Profile and contact update | Handles the fields a player may change themselves. Email changes need step-up plus a reversal notice to the old address. | The reversal notice is what tells a real player they're being taken over | Changes account |
+| SEC-07 | Session and device resolver | Lists active sessions and ends others after step-up. Doubles as a self-service "is someone else in my account" check. |  | Protective |
+| SEC-08 | Takeover triage | Freeze withdrawals first, revoke sessions, force a reset, build a fraud case. Never decides whether losses are reimbursed. | Attackers monetise through payout, not login. Freezing withdrawals first is the only step that actually stops loss | Protective |
+| SEC-09 | VPN advisory | Explains a rejected session and says to turn it off entirely. Can't answer "which VPN works". | Repeat patterned attempts go to the fraud signal store, not the support queue | Read |
 
 ---
 
@@ -254,22 +254,22 @@ Needs from the operator: limits and consumption, exclusion state including natio
 
 The per-market rules table is a genuine dependency and not a config flag. The UK needs 24 hours plus active reconfirmation on a limit increase. Sweden needs 72. Germany enforces a national cross-operator ceiling we can't exceed regardless of what the player asks. A single `cooling_period_hours` field cannot express that space.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| RG-01 | Limit status diagnostic | Explains a blocked deposit precisely. "€200 of your €250 weekly limit is used, it resets Monday." | Deflects a long tail of "my card is failing" tickets that are actually limit tickets | V1 |
-| RG-02 | Immediate limit set and reduction | Sets or lowers a limit straight away and confirms the new value. Never suggests a value, never offers a lighter alternative, never asks "are you sure". | Any friction here is an enforcement finding | V1\* |
-| RG-03 | Limit increase with cooling-off | Registers a pending change only, per market rules. Blocks entirely where harm markers are active. | | V2 |
-| RG-04 | Cool-off / time-out | Applies the break immediately, ends the session, blocks deposits, suppresses marketing for the duration. | Marketing reaching someone on a break is the most visible failure available to us | V1\* |
-| RG-05 | Closure vs self-exclusion triage | Any gambling-related reason for closing is handled as self-exclusion, not administrative closure. On ambiguity, defaults to the more protective option. | Most frequently cited failure in published settlements. The account quietly reopens next week | V1\* |
-| RG-06 | National scheme explainer | Explains a register block and that we can't see, shorten or make an exception to it. | Players assume the operator can override it. Implying we might is worse than saying nothing | V1 |
-| RG-07 | Marketing suppression interlock | Before any offer, invitation or bonus anywhere in the product, re-checks harm markers, exclusions, limits and consent at the moment of sending. | Canonical control. A player can self-exclude between a campaign being built and the message going out | V1\* |
-| RG-08 | Self-exclusion enrolment | Applies exclusion with no friction, no retention offer, no confirmation upsell. Propagates to the national register and sister brands. | | V1\* |
-| RG-09 | Harm hard stop | Screens every message whatever the ticket is about. On a trigger, freezes generated output, sends approved wording plus local helplines, escalates to a trained officer. | Runs ahead of everything else, including the conversation-state check. Distress hides inside ordinary questions | V1 |
-| RG-10 | Reinstatement intake | States the rule and hands to an officer without exception. Never lifts or shortens, never suggests a new account or a sister brand. | Excluded players present as calm and articulate and frame it as an admin error. This is a permissions problem, not a tone problem | V1 |
-| RG-11 | Safer gambling signposting | Serves the right organisations for that country and language from maintained config. Also serves people asking on someone else's behalf. | Must never come from model memory. Wrong helpline numbers are worse than none | V1 |
-| RG-12 | Activity statement | Deposits, withdrawals, net position, time played. Neutral facts, no comment on winning, losing or whether to keep playing. | Any commentary reads as encouragement or judgement | V1 |
-| RG-13 | Reality check config | Shortening always allowed and immediate. Lengthening capped. Disabling refused where the regulator requires the tool. | The asymmetry is the point | V1\*/V2 |
-| RG-14 | Third-party concern intake | Handles someone reporting concern about a player, and players claiming refunds of past losses. Confirms nothing about whether an account exists. | Confirming it exists breaches confidentiality. Ignoring welfare information breaches the licence. Take it, say nothing, escalate | V1 |
+| RG-01 | Limit status diagnostic | Explains a blocked deposit precisely. "€200 of your €250 weekly limit is used, it resets Monday." | Deflects a long tail of "my card is failing" tickets that are actually limit tickets | Read |
+| RG-02 | Immediate limit set and reduction | Sets or lowers a limit straight away and confirms the new value. Never suggests a value, never offers a lighter alternative, never asks "are you sure". | Any friction here is an enforcement finding | Protective |
+| RG-03 | Limit increase with cooling-off | Registers a pending change only, per market rules. Blocks entirely where harm markers are active. |  | Changes account |
+| RG-04 | Cool-off / time-out | Applies the break immediately, ends the session, blocks deposits, suppresses marketing for the duration. | Marketing reaching someone on a break is the most visible failure available to us | Protective |
+| RG-05 | Closure vs self-exclusion triage | Any gambling-related reason for closing is handled as self-exclusion, not administrative closure. On ambiguity, defaults to the more protective option. | Most frequently cited failure in published settlements. The account quietly reopens next week | Protective |
+| RG-06 | National scheme explainer | Explains a register block and that we can't see, shorten or make an exception to it. | Players assume the operator can override it. Implying we might is worse than saying nothing | Read |
+| RG-07 | Marketing suppression interlock | Before any offer, invitation or bonus anywhere in the product, re-checks harm markers, exclusions, limits and consent at the moment of sending. | Canonical control. A player can self-exclude between a campaign being built and the message going out | Protective |
+| RG-08 | Self-exclusion enrolment | Applies exclusion with no friction, no retention offer, no confirmation upsell. Propagates to the national register and sister brands. |  | Protective |
+| RG-09 | Harm hard stop | Screens every message whatever the ticket is about. On a trigger, freezes generated output, sends approved wording plus local helplines, escalates to a trained officer. | Runs ahead of everything else, including the conversation-state check. Distress hides inside ordinary questions | Read |
+| RG-10 | Reinstatement intake | States the rule and hands to an officer without exception. Never lifts or shortens, never suggests a new account or a sister brand. | Excluded players present as calm and articulate and frame it as an admin error. This is a permissions problem, not a tone problem | Read |
+| RG-11 | Safer gambling signposting | Serves the right organisations for that country and language from maintained config. Also serves people asking on someone else's behalf. | Must never come from model memory. Wrong helpline numbers are worse than none | Read |
+| RG-12 | Activity statement | Deposits, withdrawals, net position, time played. Neutral facts, no comment on winning, losing or whether to keep playing. | Any commentary reads as encouragement or judgement | Read |
+| RG-13 | Reality check config | Shortening always allowed and immediate. Lengthening capped. Disabling refused where the regulator requires the tool. | The asymmetry is the point | Protective / changes account |
+| RG-14 | Third-party concern intake | Handles someone reporting concern about a player, and players claiming refunds of past losses. Confirms nothing about whether an account exists. | Confirming it exists breaches confidentiality. Ignoring welfare information breaches the licence. Take it, say nothing, escalate | Read |
 
 ---
 
@@ -279,21 +279,21 @@ Needs from the operator: assigned tier and value band, loyalty ledger, host owne
 
 One rule runs through the whole module: tier changes speed and channel, never remedies or compliance gates. That's CMP-06, and it's here because internal audit and regulators specifically test for it.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| VIP-01 | Tier recognition and routing | Reads the assigned tier and owning host at session open and applies the matching service policy. Tier is never derived from turnover. | A large share of real VIPs sit on manual overrides — retained after a bad month, poached and placed straight into Platinum. Deriving tier gives the wrong answer to exactly the players who complain hardest | V1 |
-| VIP-02 | Loyalty points and progress | Answers points and progress from the live ledger. Exact thresholds only where published in that market. | | V1 |
-| VIP-03 | Tier benefit explainer | Shows benefits filtered by market, hiding any that can't lawfully be described there. | | V1 |
-| VIP-04 | Comp point redemption | Converts points at the tier rate. Blocked inside the cooling window after any password, email or payment change. | Points to cash then withdraw is a standard takeover cash-out route | V2 |
-| VIP-05 | Host escalation | Routes to the named host with context and reports their real callback window. | "Someone will contact you" is what VIPs complain about, more than the wait itself | V1 |
-| VIP-06 | Promised offer verification | Searches for a booked entitlement and releases it if found. If there's no record, says so neutrally and routes to the host. | Hosts commit over WhatsApp and it never reaches the CRM. Never grants on a verbal claim, never contradicts the host | V1, release V2 |
-| VIP-07 | Pre-approved retention offer | Grants only from a pre-authorised envelope the host set, decrementing each time. Everything passes the RG check. | The agent executes a human's budget. It never exercises commercial judgement | V2 |
-| VIP-08 | Tier downgrade explanation | Explains the demotion, grace period and requalification window. | Never says or implies "deposit more to keep your tier". That's a targeted inducement to increase spend | V1 |
-| VIP-09 | VIP cashier terms | Explains elevated caps and waivers from the config actually bound to the account. | | V1 |
-| VIP-10 | Churn signal detection | Raises a prioritised host task. Logs and alerts only, never picks or fires a save offer. | Churn language and harm language overlap almost completely, and the harm check has to win every tie. This is the requirement people push back on and it should not move | V1 |
-| VIP-11 | Dormant player reactivation | Restores context and clears the practical blockers. Unconditional exclusion re-check before any contact. | Dormancy is often an elapsed exclusion or a harm episode, not disinterest | V1/V2/V3 |
-| VIP-12 | Event invitation and RSVP | Hospitality admin. Hands anything involving spend to the events team. | | V2 |
-| VIP-13 | Upgrade request | Reports the published qualification basis and registers interest. Never promotes, never promises, never implies more deposits would secure a tier. | VIP status legally requires documented affordability checks signed off by a named person | V1 |
+| VIP-01 | Tier recognition and routing | Reads the assigned tier and owning host at session open and applies the matching service policy. Tier is never derived from turnover. | A large share of real VIPs sit on manual overrides — retained after a bad month, poached and placed straight into Platinum. Deriving tier gives the wrong answer to exactly the players who complain hardest | Read |
+| VIP-02 | Loyalty points and progress | Answers points and progress from the live ledger. Exact thresholds only where published in that market. |  | Read |
+| VIP-03 | Tier benefit explainer | Shows benefits filtered by market, hiding any that can't lawfully be described there. |  | Read |
+| VIP-04 | Comp point redemption | Converts points at the tier rate. Blocked inside the cooling window after any password, email or payment change. | Points to cash then withdraw is a standard takeover cash-out route | Changes account |
+| VIP-05 | Host escalation | Routes to the named host with context and reports their real callback window. | "Someone will contact you" is what VIPs complain about, more than the wait itself | Read |
+| VIP-06 | Promised offer verification | Searches for a booked entitlement and releases it if found. If there's no record, says so neutrally and routes to the host. | Hosts commit over WhatsApp and it never reaches the CRM. Never grants on a verbal claim, never contradicts the host | Read / changes account |
+| VIP-07 | Pre-approved retention offer | Grants only from a pre-authorised envelope the host set, decrementing each time. Everything passes the RG check. | The agent executes a human's budget. It never exercises commercial judgement | Changes account |
+| VIP-08 | Tier downgrade explanation | Explains the demotion, grace period and requalification window. | Never says or implies "deposit more to keep your tier". That's a targeted inducement to increase spend | Read |
+| VIP-09 | VIP cashier terms | Explains elevated caps and waivers from the config actually bound to the account. |  | Read |
+| VIP-10 | Churn signal detection | Raises a prioritised host task. Logs and alerts only, never picks or fires a save offer. | Churn language and harm language overlap almost completely, and the harm check has to win every tie. This is the requirement people push back on and it should not move | Read |
+| VIP-11 | Dormant player reactivation | Restores context and clears the practical blockers. Unconditional exclusion re-check before any contact. | Dormancy is often an elapsed exclusion or a harm episode, not disinterest | Read / changes account / proactive |
+| VIP-12 | Event invitation and RSVP | Hospitality admin. Hands anything involving spend to the events team. |  | Changes account |
+| VIP-13 | Upgrade request | Reports the published qualification basis and registers interest. Never promotes, never promises, never implies more deposits would secure a tier. | VIP status legally requires documented affordability checks signed off by a named person | Read |
 
 ---
 
@@ -303,16 +303,16 @@ Least developed module in this draft. The requirements are right but thin, and I
 
 Needs from the operator: versioned terms, device and app compatibility data, message delivery logs, incident register, consent records.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| PLT-01 | Version-pinned terms | Answers policy questions using the version actually in force — the one accepted, or the one live when the disputed event happened. | Quoting today's terms for a three-week-old bet produces a written statement we then have to honour | V1 |
-| PLT-02 | App and browser diagnostics | Specific fix for that device and build. Suppresses generic advice while a live incident is running. | | V1 |
-| PLT-03 | Deliverability investigation | Investigates "I never got the email" from delivery records. | Sits underneath password resets, one-time codes and withdrawal confirmations, so it removes tickets in three other modules. Scores above its own volume for that reason | V1, resubscribe V2 |
-| PLT-04 | Outage broadcaster | Matches incidents to the specific product failing, and gives only the ETA the incident record contains. | Inventing an ETA during an outage turns one complaint into two | V1, restore notify V3 |
-| PLT-05 | Communication preferences | Updates consent per channel and records the wording consented to. Refuses to suppress transactional and regulatory messages. | | V1\*/V2 |
-| PLT-06 | Session timeout explainer | Distinguishes five look-alike causes of "it keeps logging me out". Read-only. | Four of the five are protective and must not be weakened through a tech-support conversation | V1 |
-| PLT-07 | Identifier and timezone resolution | Turns whatever the player supplies into the identifier the target system needs. | Most casino, sportsbook and bonus procedures can't start without this. Players never have the ID we need. Easy to miss when planning, blocks a lot when missing | V1 |
-| PLT-08 | Accessibility handler | Adapts output, saves the preference, offers other channels where chat itself is the barrier. | Also surfaces to RG as a possible vulnerability signal | V2 |
+| PLT-01 | Version-pinned terms | Answers policy questions using the version actually in force — the one accepted, or the one live when the disputed event happened. | Quoting today's terms for a three-week-old bet produces a written statement we then have to honour | Read |
+| PLT-02 | App and browser diagnostics | Specific fix for that device and build. Suppresses generic advice while a live incident is running. |  | Read |
+| PLT-03 | Deliverability investigation | Investigates "I never got the email" from delivery records. | Sits underneath password resets, one-time codes and withdrawal confirmations, so it removes tickets in three other modules. Scores above its own volume for that reason | Read / changes account |
+| PLT-04 | Outage broadcaster | Matches incidents to the specific product failing, and gives only the ETA the incident record contains. | Inventing an ETA during an outage turns one complaint into two | Read / proactive |
+| PLT-05 | Communication preferences | Updates consent per channel and records the wording consented to. Refuses to suppress transactional and regulatory messages. |  | Protective / changes account |
+| PLT-06 | Session timeout explainer | Distinguishes five look-alike causes of "it keeps logging me out". Read-only. | Four of the five are protective and must not be weakened through a tech-support conversation | Read |
+| PLT-07 | Identifier and timezone resolution | Turns whatever the player supplies into the identifier the target system needs. | Most casino, sportsbook and bonus procedures can't start without this. Players never have the ID we need. Easy to miss when planning, blocks a lot when missing | Read |
+| PLT-08 | Accessibility handler | Adapts output, saves the preference, offers other channels where chat itself is the barrier. | Also surfaces to RG as a possible vulnerability signal | Changes account |
 
 ---
 
@@ -324,14 +324,14 @@ Under UK licence conditions a complaint exists the moment dissatisfaction is exp
 
 Needs from the operator: complaint register, dispute-body config per market, service-recovery matrix, goodwill history.
 
-| ID | Feature | What it does | Notes | Phase |
+| ID | Feature | What it does | Notes | Type |
 |---|---|---|---|---|
-| CMP-01 | Complaint record creation | Detects dissatisfaction in any module and creates the record before the acknowledgement is sent, clock starting from the player's message. | Resolving it conversationally without a record produces exactly the pattern regulators prosecute as complaint suppression | V1 |
-| CMP-02 | Dispute body signposting | Gives the correct free dispute body for the licence the player registered under, proactively at deadlock. | Routes on licensing entity, never country. The same operator's UK brand and .com brand have completely different routes | V1 |
-| CMP-03 | Evidence pack assembly | Assembles the transaction trail, round or bet logs, terms version at the time, prior goodwill, and attaches it to the handover. | The agent's most valuable output in every do-not-automate case. It can't decide, but it can do all the work up to the decision | V1 |
-| CMP-04 | Complaint status tracking | Stage, elapsed and remaining statutory time, next milestone. Never predicts the outcome. | | V1 |
-| CMP-05 | Goodwill guardrail | Single money-out path for the whole product. Issues re-credits only where an independent record proves an operator-side fault, within hard caps, keyed on the real object so two chat windows can't claim it twice. | The ceiling number and which budget it draws from are not ours to set. Open question 7 | V2 |
-| CMP-06 | Remedy consistency control | Enforces that outcomes, ceilings, RG thresholds and verification gates are identical regardless of tier. Speed and channel may differ. | Runtime assertion plus a negative-test suite in CI. Regulators test for this specifically | V1 |
+| CMP-01 | Complaint record creation | Detects dissatisfaction in any module and creates the record before the acknowledgement is sent, clock starting from the player's message. | Resolving it conversationally without a record produces exactly the pattern regulators prosecute as complaint suppression | Read |
+| CMP-02 | Dispute body signposting | Gives the correct free dispute body for the licence the player registered under, proactively at deadlock. | Routes on licensing entity, never country. The same operator's UK brand and .com brand have completely different routes | Read |
+| CMP-03 | Evidence pack assembly | Assembles the transaction trail, round or bet logs, terms version at the time, prior goodwill, and attaches it to the handover. | The agent's most valuable output in every do-not-automate case. It can't decide, but it can do all the work up to the decision | Read |
+| CMP-04 | Complaint status tracking | Stage, elapsed and remaining statutory time, next milestone. Never predicts the outcome. |  | Read |
+| CMP-05 | Goodwill guardrail | Single money-out path for the whole product. Issues re-credits only where an independent record proves an operator-side fault, within hard caps, keyed on the real object so two chat windows can't claim it twice. | The ceiling number and which budget it draws from are not ours to set. Open question 7 | Changes account |
+| CMP-06 | Remedy consistency control | Enforces that outcomes, ceilings, RG thresholds and verification gates are identical regardless of tier. Speed and channel may differ. | Runtime assertion plus a negative-test suite in CI. Regulators test for this specifically | Read |
 
 ---
 
@@ -343,13 +343,13 @@ Every message gets screened for distress and gambling harm before any other deci
 
 On a trigger the agent stops generating text, sends only wording the operator has approved for that market, offers self-exclusion or a break in the same conversation, escalates to a trained officer at top priority, and gives the correct local support contacts from maintained configuration.
 
-### 7.2 Why protective actions ship in V1
+### 7.2 Why protective actions are treated differently
 
-This is the one place we're deliberately breaking our own rule that nothing changes an account before the V2 accuracy gate, so it's worth explaining properly.
+Everything that changes an account sits behind an accuracy gate (§7.4). Protective actions are the deliberate exception, so it's worth explaining properly rather than leaving it as an inconsistency.
 
 Friction in responsible gambling is deliberately asymmetric. The correct design is zero friction on protecting yourself and high friction on undoing it. An agent that answers "where's my deposit" in two seconds and puts "I need to stop gambling" in a queue has inverted exactly the asymmetry the law is built around, and that inversion turns up in published enforcement settlements.
 
-These actions are safe to ship early because they have no wrong direction. Restrictive only, one-way, no amount involved, parameters bound deterministically, approved wording only, and a trained human is still notified. The action removes the delay before protection lands. It doesn't remove the human.
+These actions are safe to release ahead of the gate because they have no wrong direction. Restrictive only, one-way, no amount involved, parameters bound deterministically, approved wording only, and a trained human is still notified. The action removes the delay before protection lands. It doesn't remove the human.
 
 Our external claim changes from "the agent can't change anything" to "the agent can't move money", which is still true and is arguably a stronger claim anyway.
 
@@ -364,6 +364,19 @@ Each procedure declares what player data it may touch and everything else is dro
 No model training on player conversations. Each operator's data stays in its own region.
 
 One thing worth flagging to whoever owns security: chat transcripts containing card numbers would pull the whole platform into PCI scope, which changes the audit surface and the enterprise sales cycle. The scrubber isn't only a compliance nicety.
+
+### 7.4 The accuracy gate on account-changing actions
+
+No requirement typed **Changes account** is enabled for an operator until the read and protective set has demonstrated, on their live traffic:
+
+- a sustained wrong-answer rate under 0.5% on account questions
+- zero instances of generated text on anything in §8
+- zero instances of the agent sending into a conversation a human had taken over
+- an audit trail that has survived a real compliance review, not an internal one
+
+This is a gate on evidence, not a date. Actions are the point where a wrong answer becomes a wrong transaction, and the two failures are not comparable — a bad sentence can be corrected in the next message, a duplicate refund cannot be taken back.
+
+I'd expect pressure to relax this once the read side is working well and someone wants the automation number to move. It shouldn't move.
 
 ---
 
@@ -407,37 +420,21 @@ Most of this depends on what the operator can actually expose. Every procedure d
 
 Realistically a typical operator will run around 60 of the 117 at launch. This is a commercial conversation, not a footnote — the dashboard shows which procedures are live and which are dark and why, so "what am I paying for" is visible up front rather than discovered in month two.
 
-Three hard gates. An operator who can't meet these can't have the corresponding phase at all:
+Three hard gates. These aren't preferences — an operator who can't meet one simply doesn't get the requirements it covers:
 
 - **Can't distinguish our sent messages from a human agent's** → blocks everything. Most help desks echo our own outbound back through the same webhook, and if we can't tell them apart we either talk over a human or hand the conversation to ourselves.
-- **Can't accept our reference on an outbound action** → blocks all V2. Without it we can't reconcile after a timeout, and a duplicate refund can't be undone.
-- **Can't supply exclusion status at the moment of sending** → blocks all V3. A nightly export can't tell you what's true now.
+- **Can't accept our reference on an outbound action** → blocks every **Changes account** requirement. Without it we can't reconcile after a timeout, and a duplicate refund can't be undone.
+- **Can't supply exclusion status at the moment of sending** → blocks every **Proactive** requirement. A nightly export can't tell you what's true now.
+
+Sequencing and delivery timelines aren't in this document. This is what the product does; when each piece lands is a delivery plan and belongs with whoever owns it.
 
 ---
 
-## 11. Plan
-
-| Phase | Timing | What ships |
-|---|---|---|
-| 1. Foundation and guardrails | Months 1–2 | Core chat, harm detection, message scrubbing, complaint records, account reads, and the protective action set — limits, breaks, self-exclusion, marketing suppression, withdrawal freeze |
-| 2. Depth and coverage | Months 3–4 | Payments depth, bonus and wagering, document upload with regional routing, help-desk integration, step-up verification, identifier resolution |
-| 3. Autonomous operations | Months 5–6 | V2 actions behind the accuracy gate: goodwill engine, bonus grants, payment-method management, limit increases. Draft suggestions for human agents |
-| 4. Deep vertical | Months 7–9 | Sportsbook, casino round recovery and dispute intake, VIP routing and host handoff |
-| 5. Proactive and voice | Months 10–12 | Proactive status updates, expiry countdowns, reactivation, all behind the send-time RG check. Voice |
-
-Phase 3 doesn't start on a date. It starts when phases 1 and 2 have shown a sustained wrong-answer rate under 0.5%, zero generated text on a prohibited topic, zero cases of the agent talking over a human, and an audit trail that's survived a real compliance review.
-
-Actions are where a wrong answer becomes a wrong transaction. The accuracy bar is the gate, not the calendar. I'd expect pressure on this and I don't think it should move.
-
-The timings above assume a design partner is in place from month one. They're indicative, not committed.
-
----
-
-## 12. Open questions
+## 11. Open questions
 
 Things that need a decision from someone who isn't me.
 
-**1. Do we ship protective RG actions in V1?** [Compliance, CISO]
+**1. Do protective actions sit outside the accuracy gate?** [Compliance, CISO]
 Recommendation is yes. The alternative ships an agent whose protective path is slower than its depositing path, which is the inversion that appears in enforcement settlements. The counter-argument is that it breaks the clean "can't change anything" claim, and I think "can't move money" is a fine substitute.
 
 **2. What resolution rate do we contract?** [Commercial, with whoever owns the first customer relationship]
@@ -455,11 +452,11 @@ Recommendation is that the operator supplies it and we index and version it. Own
 **6. Sportsbook depth or payments depth first?** [Product, once we know the first customer]
 Recommendation is cross-cutting safety work first, six to eight weeks, then payments unless the first partner is sports-led. Payments reuses connectors we already need.
 
-**7. Does the agent move money in V2, and at what ceiling, from whose budget?** [Finance, Compliance]
+**7. Does the agent move money at all, and at what ceiling, from whose budget?** [Finance, Compliance]
 Recommendation is yes under CMP-05's guardrails. The ceiling number and the budget line aren't product's to set.
 
-**8. Do we build document upload in V1?** [Engineering, Compliance]
-Recommendation is yes but capability-gated per market. It's the largest single deflection in Module E, but a compliant multi-region pipeline sending documents to a fourth party is a project in its own right and shouldn't gate the rest of V1.
+**8. Do we build in-chat document upload ourselves?** [Engineering, Compliance]
+Recommendation is yes but capability-gated per market. It's the largest single deflection in Module E, but a compliant multi-region pipeline sending documents to a fourth party is a project in its own right and shouldn't hold up everything else.
 
 ---
 
