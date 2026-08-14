@@ -44,8 +44,8 @@ Sold as a platform. Each operator gets an isolated setup with their own procedur
 
 | Goal | Measure | Target |
 |---|---|---|
-| Handle the routine volume | Eligible-resolution rate — contacts the agent is *allowed* to resolve, handled end to end | 80–90% by V2 |
-| Be honest about total coverage | Contained rate — share of **all** inbound handled end to end | 50–55% by V2 |
+| Automate what the agent is permitted to handle | **Eligible-resolution rate** — of the contacts the agent is *allowed* to resolve, the share it closes end to end without a human | 80–90% by V2 |
+| Reduce the operator's total human workload | **Contained rate** — of *all* inbound, the share that never reaches a human. Deliberately lower than the rate above, because complaints, gambling-harm signals and money-laundering holds must always reach a person | 50–55% by V2 |
 | Be right about people's money | Wrong-answer rate on account questions | Under 0.5% |
 | Feel instant | First feedback to the player | Under 1 second |
 | Answer fast enough | Simple questions ~2s; investigations 5–8s | See §8 |
@@ -53,7 +53,11 @@ Sold as a platform. Each operator gets an isolated setup with their own procedur
 | Cost far less than a person | Cost per contact vs $3–5 human baseline | ~$0.10 |
 | Survive the big days | Concurrent chats during a major fixture | 10,000+ |
 
-> **Why two resolution numbers.** A responsible-gambling escalation, a complaint, and an anti-money-laundering hold are all **successes** when routed correctly — but they count as misses against a single blended figure. Publishing one number without saying which denominator it uses guarantees an argument with the first customer in month three.
+> **Why two numbers, and where the gap comes from.** Around a third of inbound can never be contained. Roughly 20–25% must reach a human by rule — complaints, distress signals, money-laundering holds, disputed settlements, jackpot claims (§7). Another 10–15% needs a procedure that particular operator's systems cannot support (§9). That leaves about 65% eligible, and 65% × 85% ≈ **55% contained**.
+>
+> We publish both because **the market advertises the first number and operators measure the second.** A competitor's "80–90% automation" headline sets the expectation; the operations dashboard then reports tickets closed without an agent — which is the contained rate. Signing on one number and reporting the other is how a working product looks like a failed one in month three.
+>
+> The deeper reason is that a single blended figure **scores correct behaviour as failure.** When the agent catches a distressed player and routes them to a trained officer in seconds, that is the product working exactly as designed — and it counts as a miss. Same for opening a complaint record with the statutory clock running. See open decision #2 in §11: someone senior has to be willing to say this to the first customer, in the room.
 
 ---
 
