@@ -1,554 +1,669 @@
-# IGamingSupportAgent — Requirements
+# Autonomous AI Player Support — Functional Requirements
 
-**Draft v0.3 · 13 August 2026**
+**Version** 1.0 · **Status** Draft for review · **Owner** Product
+
+**Sources.** This document is built from two inputs: `IGamingPRD.pdf` (product requirements — vision, goals, personas, the AI Procedures engine, trust layer, integrations, NFRs) and `Queries.pdf` (the player query taxonomy — six operational categories with real player phrasings and their underlying causes). Where the two disagree, the taxonomy wins on *what players ask* and the PRD wins on *what we build*. Open conflicts are listed in §17 rather than silently resolved.
+
+**How to read this.** Every requirement has a stable ID. Use the ID in tickets, test cases, and change requests — the numbering never gets reused, even if a requirement is dropped. Requirements are grouped by what the player is trying to do, not by which system we call.
+
+Each requirement carries an **action type**, because the type determines how much safety machinery sits behind it:
+
+| Type | Meaning | Risk posture |
+|---|---|---|
+| **Read** | Looks something up and explains it. Changes nothing. | Low — worst case is a wrong answer, which we can correct |
+| **Change** | Alters the player's account, balance, or entitlements | High — needs identity verification, limits, and an audit trail |
+| **Protective** | Restricts the account only: limits down, exclusions on, access revoked | Low — there is no wrong direction. Always allowed |
+| **Explain** | The answer is a policy or a rule, often a "no". No system call needed | Medium — the risk is saying it badly, not doing it wrong |
+| **Escalate** | Hands to a human with context assembled | Low — but the handover must be clean |
 
 ---
 
-## In one page
+## 1. What we are building
 
-**What we're building.** Software that answers customer support questions for online gambling companies. An operator connects their help desk and their back office; our agent reads a player's actual account and answers their question. When it shouldn't answer, it hands the conversation to a human with everything that person needs to pick up where the agent left off.
+Today's support chatbots retrieve information. A player asks where their money is, and the bot links them to a help article about withdrawal times. The player already read that article. That is why they are in the chat.
 
-**Who buys it.** Multiple gambling operators, each on their own isolated setup, sharing one platform. Not a one-off build for a single company.
+We are building something that acts instead of points. When a player asks where their $1,200 withdrawal went, the agent looks at the actual withdrawal, finds the actual reason it is held, and either fixes it or explains precisely what the player must do next. It works through the operator's existing back office, payment gateway, helpdesk, and CRM — no infrastructure replacement, no data migration.
 
-**What makes it different from a chatbot.** A chatbot recites the bonus terms. This reads *your* wagering progress and tells you how much further you have to go. That requires a live connection to the operator's systems and a lot of care about who is allowed to see what.
+The distinction matters commercially. Deflection tools reduce the number of conversations a human sees. This reduces the number of conversations that need a human at all, which is a different and much larger saving.
 
-**What the first release will not do.** It will not change anything. It reads and it answers. It cannot issue a bonus, trigger a refund, or unlock an account — those come in the second release, once the first has proved it gets answers right.
+Three things constrain everything that follows:
 
-**The three rules everything else follows from:**
+**This is regulated money.** Every action either touches real funds or touches a compliance obligation. An agent that is right 95% of the time and wrong 5% of the time is not 95% good — the 5% is a regulatory finding.
 
-1. **The agent never decides on its own to look at someone's account.** A written procedure decides that. The AI only reads out the facts it was handed and phrases them well.
-2. **Safety checks run before anything else, on every single message.** Problem-gambling signals, abusive messages, and legally sensitive topics are caught by a separate layer that can stop the agent before it does anything.
-3. **If we can't do something safely, a human gets it.** Never a guess, never silence.
+**Player safety outranks everything.** When a player shows signs of gambling harm, commercial objectives stop applying. No retention offer, no upsell, no attempt to keep them playing. This is not a policy we can configure away for a particular operator.
 
----
-
-## How to read this
-
-| If you are… | Read |
-|---|---|
-| **New to the project** | This page, then Part 1 |
-| **A CS or CX lead** | Part 2 sections 2.2–2.7 (what the agent does in conversations) and Part 5 (what success looks like) |
-| **Compliance or RG** | Part 2 section 2.8 (responsible gambling), Part 3 sections 3.4–3.6 (security, data, audit) |
-| **An engineer** | All of Parts 2 and 3, then `Design.md` |
-| **Deciding what to build first** | Part 4 (phasing) |
-| **Unfamiliar with a term** | The glossary at the end |
-
-**Conventions used here**
-
-- **MUST** — the release it's assigned to doesn't ship without it, unless someone explicitly decides otherwise.
-- **SHOULD** — a strong default, but tradeable.
-- Every requirement has a permanent ID (`FR-12`, `NFR-3`). **IDs never change**, even if we move a requirement to a different release. `Design.md` refers back to these.
-- **V1 / V2 / V3** are the three planned releases. Part 4 says which requirements land in each.
+**Operators are all different.** Different back office, different payment providers, different licences, different rules about what a support agent may do. The product has to absorb that variation without a code change per operator.
 
 ---
 
-# Part 1 — Context
+## 2. Goals and how we measure them
 
-## 1.1 Decisions already made
-
-| Question | Answer | What follows from it |
+| Goal | Measure | Target |
 |---|---|---|
-| One customer or many? | **Many — a shared platform** | Every operator's data must be walled off from every other operator's. Each needs their own settings, their own credentials, and a way to set themselves up. This is a much bigger build than a one-off. |
-| Can the agent change things? | **No, not in V1. It reads and answers.** | Lower risk, faster to ship. But it also means V1 can't claim the automation rates competitors advertise. |
-| Which chat channels? | **Not decided yet** | Requirements below are written so the answer can slot in later without rework. |
+| Resolve without a human | Share of inbound conversations closed end to end, no human touch | 80–90% (see §17.1) |
+| Players are satisfied | CSAT across all resolved conversations | 4.8 / 5.0 |
+| Reduce manual workload | Reduction in support hours spent on tier-1 work | 40% (see §17.1) |
+| No waiting | Time to first substantive reply, including at peak | Instant — no queue |
+| Support becomes a growth channel | Retention lift from proactive engagement | Directional, per operator |
 
-## 1.2 The three rules, explained
+**On the 80–90% number.** This is the share of *conversations*, not the share of *categories*. Financial and account questions are high volume and highly automatable. Bet settlement disputes and source-of-funds reviews are lower volume and often need a human. The blended number can be high while several categories stay mostly manual. We should report the blend and the per-category breakdown together, or the number will be read as a promise we did not make.
 
-### Rule 1 — The procedure decides what happens; the AI decides what it says
-
-Support scenarios are written down as step-by-step **procedures** — readable documents that a CS lead or compliance officer can write and review, not code. The procedure says which account details to look up and in what order. The AI's job is narrower than people expect: it works out what the player is asking, and it turns the facts the procedure fetched into a good sentence.
-
-**Why this matters:** it means we can *prove* the agent checked someone's identity before telling them their balance, rather than promising that we asked it nicely. That proof is what a regulator wants to see.
-
-### Rule 2 — Safety checks sit outside the procedures
-
-Screening for problem gambling, distress, abuse, and legally sensitive topics happens on every incoming message, *before* the agent picks a procedure. It has the power to stop everything else.
-
-**Why this matters:** if screening were just another step inside a procedure, then any procedure someone forgot to add it to would silently skip it. We're required to screen 100% of messages, and the only way that holds is if screening can't be skipped by accident. A second check runs on the way out, before any message reaches a player.
-
-### Rule 3 — Connections to operator systems are a checklist, not a promise
-
-Every operator's back office is different. Some can tell us a player's bonus wagering progress; some can't. So each type of lookup is defined as a **capability** — a specific question we can ask an operator's systems. During setup we check which capabilities that operator actually supports. Procedures that need a missing capability are switched off for that operator, and those questions go to humans instead.
-
-**Why this matters:** we can start building without knowing what any given operator's systems can do, and a thin back office means a smaller agent rather than a broken one.
-
-## 1.3 What "read-only" means for the first release
-
-Our main competitor's pitch is *"chatbots answer questions, AI agents take action."* By that framing, a read-only V1 is on the wrong side of the line.
-
-That's an acceptable trade **only if** V1 wins on the things it can win on: accuracy, depth of account knowledge, compliance posture, and clean handoffs to humans. Two consequences run through this whole document:
-
-- **The action layer is designed now and switched on in V2.** It is not a retrofit. See `FR-3` and `FR-4`.
-- **V1 cannot honestly claim 80–90% automation.** A read-only agent can only fully handle the questions that are purely informational. Part 5 sets realistic targets.
+**On CSAT.** Measuring satisfaction only on conversations the agent resolved flatters the number, because the hard ones get escalated out of the sample. We report CSAT on every conversation the agent touched, including escalations.
 
 ---
 
-# Part 2 — What the system does
+## 3. Who this is for
 
-*The complete list, regardless of which release it lands in. Part 4 assigns releases.*
+| Persona | What they want | What goes wrong today | What we give them |
+|---|---|---|---|
+| **Player** | An answer now — where the money is, why the account is locked, why the bonus is missing | Queue waits, chatbots that link to articles, generic non-answers | 24/7 action, not information. Real account state, in plain language |
+| **VIP & Retention Manager** | Keep high-value players engaged; act before they leave | VIPs sit behind tier-1 traffic; disengagement is noticed after churn, not before | Behavioural signals, automatic milestone rewards, proactive re-engagement |
+| **Compliance & RG Officer** | Provable adherence; duty of care actually discharged | Model hallucinations, missed distress cues, non-compliant promo claims, unauditable bot actions | Screening on 100% of messages, hard stops, immediate exclusion routing, complete audit trail |
+| **Support Operations Lead** | Low response times, controlled cost, insight into what is breaking | Seasonal churn in the team, traffic spikes on big fixtures, disconnected tools | Fast integration, procedures they can author themselves, feedback on recurring friction |
 
-## 2.1 The procedure engine
-
-This is the core of the product. A procedure is a written document describing how to handle one kind of question — readable and editable by the people who own the process today, not just engineers.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-1** | Procedures are documents, not code. Non-engineers can write and review them. They are versioned, and changes can be compared side by side. | MUST |
-| **FR-2** | Each procedure states: what triggers it, what must be true before it starts, its steps in order, what it is forbidden from doing, when to escalate, what must be disclosed to the player, what player data it may touch, and which operator-system capabilities it needs. | MUST |
-| **FR-3** | If a starting condition isn't met, the procedure routes to a defined fallback. The agent never carries on with a guess. | MUST |
-| **FR-4** | The full list of possible step types — including the action steps that change things — exists from the first release. Whether each type can actually run is controlled by settings. | MUST |
-| **FR-5** | A procedure that uses a step type that's switched off fails when it's written, with a clear message. It never fails live in front of a player. | MUST |
-| **FR-6** | Every step that runs is recorded: what went in, what came out, how long it took, what was decided, and which version of the procedure was in force. | MUST |
-| **FR-7** | **Rehearsal mode.** A procedure can be run against real conversations and record what it *would* have said, without sending anything. | MUST |
-| **FR-8** | Each operator has their own procedures, starting from a shared library they can adopt and adjust. | MUST |
-| **FR-9** | A procedure handles one question, not one conversation. Players ask two things at once ("where's my deposit — and why can't I withdraw?"), so a conversation can have several procedures running. | MUST |
-| **FR-10** | Procedures state which operator-system capabilities they need. If an operator can't supply one, that procedure is switched off for them and those questions go to humans. | MUST |
-| **FR-11** | Operators can write new procedures without involving our engineers. | MUST |
-
-**FR-12** — These step types MUST exist:
-
-| Group | Steps | Plain meaning |
-|---|---|---|
-| **Identity** | `verify_identity` | Confirm this really is the account holder |
-| **Look things up** | `read_player_state`, `read_transactions`, `read_kyc_status`, `read_bonus_state`, `read_limits`, `read_knowledge` | Read account status, payments, document checks, bonuses, limits, and the operator's own written content |
-| **Decide and speak** | `classify`, `branch`, `wait`, `respond`, `escalate`, `log` | Work out what's being asked, take a different path depending on the answer, reply, hand to a human, keep a record |
-| **Change things** (V2) | `issue_bonus`, `trigger_refund`, `resend_verification`, `update_ticket`, `apply_limit`, `reset_credential`, `close_account` | Actions that alter something. Defined now, switched off until V2. |
-
-## 2.2 The starting set of procedures
-
-**FR-9 continued — FR-13** — These procedures MUST ship in the shared library. All of them only read.
-
-| Procedure | The player asks | What the agent does |
-|---|---|---|
-| **Where is my deposit** | "My deposit hasn't arrived" | Check identity → look up recent deposits → cross-check the balance → explain the status and when it'll land → if it failed or is missing, hand to the payments team with the full picture |
-| **Withdrawal status** | "Where's my withdrawal?" | Look up the withdrawal, any pending checks, expected timing → explain → escalate if it's stuck |
-| **Verification / KYC** | "Why isn't my account verified?" | Look up document status → explain exactly which documents are outstanding and why → hand over for document review |
-| **Bonus status** | "Where's my bonus? Why can't I withdraw?" | Look up the bonus and wagering progress → explain the terms against *their* actual progress → escalate to issue anything |
-| **Can't log in** | "I can't get into my account" | Look up account status → explain the type of problem → route to the right team |
-| **Limits and controls** | "How do I set a deposit limit?" | Look up current limits → explain → point to the operator's own tools |
-| **Responsible gambling** | Any sign of gambling harm | Pre-approved wording only, then straight to a trained human. Never a generated sentence. See §2.8 |
-| **Complaint or dispute** | Anything formal or contested | Straight to a human. Nothing generated goes to the player. See §2.8 |
-| **General questions** | Rules, payment methods, how a game works | Answer from the operator's own published content. No account lookup needed |
-
-**FR-14** — *Where is my deposit* is the **benchmark we build against**. It touches identity, payment data, cross-checking two systems, and escalation — all in one flow. If that works properly, most of the engine works.
-
-## 2.3 Knowing who the player is
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-15** | Identify the player using the operator's own stable customer ID. Matching on email address alone is not good enough. | MUST |
-| **FR-16** | Confirm identity before revealing anything about an account. The standard for "confirmed" is set per country, since the rules differ. | MUST |
-| **FR-17** | Detect self-excluded players and players in a cooling-off period the moment we identify them, and route them to a separate protective process — never a normal support flow. | MUST |
-| **FR-18** | If the operator's systems are down, hand over to a human and say so honestly. **Never guess. Never invent a status.** | MUST |
-| **FR-19** | Handle people who aren't logged in or don't have an account, without revealing anything account-specific. | MUST |
-
-## 2.4 Understanding the message
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-20** | Every incoming message is assessed before the agent acts: what's being asked, how the person feels, any gambling-harm signals, any abuse, what language, and how confident we are. | MUST |
-| **FR-21** | Those assessments run at the same time as each other, not one after another, to stay within the speed budget. | MUST |
-| **FR-22** | If confidence is below the operator's threshold, hand to a human rather than answering. | MUST |
-| **FR-23** | Spot when someone asks two things at once and handle each properly. | MUST |
-| **FR-24** | Support 120+ languages. Work out which one the player is using and reply in it. | MUST |
-| **FR-25** | Fixed, approved wording (gambling-harm messages, disclosures, handover messages) is translated by humans for each market. **Never machine-translated on the fly.** | MUST |
-
-## 2.5 Emotion and when to hand over
-
-Whether someone is upset changes how the agent should behave — but not in the obvious way.
-
-**In gambling support, mild frustration is normal, not exceptional.** People contact support because money is missing. A simple rule of "if annoyed, get a human" would send most of the workload to humans and destroy the point of the product. It would also often make things worse: for many questions, the fastest way to calm someone down is an accurate answer in three seconds, not a twenty-minute queue for a person who will read the same screen and say the same thing.
-
-**FR-26** — Assess emotional state on every incoming message, before acting.
-
-**FR-27** — Respond across five bands, not a yes/no switch:
-
-| What we detect | What the agent does |
-|---|---|
-| **Distress or gambling harm** | Completely separate path. Approved wording, trained human. **Never the ordinary support queue.** |
-| **Abuse or threats** | Immediate handover, flagged, under its own policy |
-| **Very frustrated** | Answer only if we're confident and can settle it in one reply. Otherwise hand over |
-| **Mildly frustrated** | Answer, but change the tone — lead with the answer, drop the pleasantries, acknowledge briefly |
-| **Calm** | Normal |
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-28** | Gambling-harm detection **overrides** frustration handling. A distressed player must never end up in the ordinary support queue. | MUST |
-| **FR-29** | Abuse and threats have their own policy, separate from normal escalation. | MUST |
-| **FR-30** | Track whether someone is getting *more* upset over the conversation. A rising trend is a reason to hand over, regardless of the starting point. | MUST |
-| **FR-31** | Take account of repeat contacts. A calm third message about the same unresolved deposit matters more than one angry first message. | MUST |
-| **FR-32** | Check whether a human is actually available. Handing over at 3am when nobody is on shift produces silence — attempt the answer instead, and be honest about the wait. | MUST |
-| **FR-33** | The emotional reading also shapes *how* the agent writes, not just where the conversation goes. Detecting frustration and then replying cheerfully is worse than not detecting it. | MUST |
-| **FR-34** | Tune the thresholds per operator **and per market**. Emotion detection is much weaker outside English, and ordinary directness in some countries reads as anger to a model trained on English politeness. | MUST |
-| **FR-35** | Monitor how accurate emotion detection is in each language, and raise an alert if one market starts over-escalating. | MUST |
-
-## 2.6 Handing over to a human
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-36** | **Once a human replies, the agent stops — permanently.** It only resumes if a human explicitly hands it back. | MUST |
-| **FR-37** | Every handover carries the full picture: who the player is, what the agent looked up, what it concluded, why it handed over, and the whole conversation. | MUST |
-| **FR-38** | If a player asks for a human, they get one immediately. No attempt to talk them out of it. | MUST |
-| **FR-39** | Which team receives a handover is configurable per operator, per topic, and per time of day. | MUST |
-| **FR-40** | Cap how many times the agent replies in one conversation. At the cap, hand over rather than keep going. | MUST |
-| **FR-41** | Track the state of each conversation: status, last message handled, replies sent, topic, confidence, emotional trend, and reason for handover. | MUST |
-
-> **FR-36 is the single most important behaviour in this document.** An agent that pipes up in the middle of a human's conversation is the most damaging thing this system could do.
-
-## 2.7 Conversation mechanics
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-42** | Wait a moment for people who send three short messages instead of one long one, then answer once. | MUST |
-| **FR-43** | Say it's an automated agent in the first message of every conversation, under a name that clearly isn't a person's. | MUST |
-| **FR-44** | Clean and sanitise everything before it's sent. | MUST |
-| **FR-45** | **Final check before sending.** Confirm approved wording really came from the approved list, that there's no promotional language, and that no other player's details have crept in. | MUST |
-| **FR-46** | Treat everything a player writes, and everything we retrieve, as untrusted. It must never be able to change the agent's instructions or take over a procedure. | MUST |
-
-## 2.8 Responsible gambling and compliance
-
-Online gambling is licensed. This section isn't an engineering preference — it's the price of operating.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-47** | Screen **every single incoming message** for distress and problem-gambling signals, whatever the message is about. | MUST |
-| **FR-48** | That screening is part of the pipeline, not a step inside a procedure — so no procedure can accidentally skip it. | MUST |
-| **FR-49** | On any gambling-harm signal: send the operator's pre-approved wording for that market and hand straight to a trained human. **Nothing generated.** | MUST |
-| **FR-50** | Keep a per-operator list of **always hand over** topics. The default list: responsible gambling and self-exclusion, closing an account, complaints and disputes, money-laundering and source-of-funds questions, chargebacks, legal threats, safeguarding and welfare concerns, and anything involving money being paid back. | MUST |
-| **FR-51** | On those topics, **not one generated word reaches the player.** Fixed acknowledgement wording only. | MUST |
-| **FR-52** | Never write anything promotional or that encourages more play. In several markets this is a licence condition, not a matter of tone. | MUST |
-| **FR-53** | Behaviour changes by the player's country. Markets differ substantially on bonus wording, gambling-harm intervention, and what must be disclosed. | MUST |
-
-## 2.9 Operator content and knowledge
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-54** | Keep a searchable copy of each operator's own content: terms and conditions, bonus terms, help centre, payment methods, game rules. | MUST |
-| **FR-55** | Answers must be based on that content. The agent must not state terms or policy it can't point to a source for. | MUST |
-| **FR-56** | Re-read the content when it changes, and show the operator when it's gone stale. Quoting last month's bonus terms generates complaints. | MUST |
-| **FR-57** | Keep a per-market library of approved fixed wording. | MUST |
-
-## 2.10 Taking action (second release)
-
-Written down now, switched on in V2. The engine, the record-keeping, the pre-checks, and the guardrails are identical to reading — only the switch differs.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-58** | Carry out actions on operator systems, within the limits the procedure sets. | MUST |
-| **FR-59** | Every action is checked beforehand and safe to retry. A retry must never issue a bonus twice or refund twice. | MUST |
-| **FR-60** | Set per-operator, per-procedure limits on what the agent may do — money ceilings and rate caps. | MUST |
-| **FR-61** | Above a set value, a human approves before anything happens. | MUST |
-| **FR-62** | Every action is reversible, or it requires human approval. | MUST |
-| **FR-63** | Actions are recorded in their own separate, unalterable log. | MUST |
-| **FR-64** | A switch that stops all actions on its own, independently of the switch that stops the agent talking. | MUST |
-
-## 2.11 Helping human agents (second release)
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-65** | Produce suggested answers that only human agents see — same procedures, same information, no risk to players. | MUST |
-| **FR-66** | Measure how often agents accept a suggestion and how much they change it. | SHOULD |
-
-## 2.12 Reaching out first (third release)
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-67** | Start conversations based on player behaviour: risk of leaving, milestones, stalled verification, failed payments. | MUST |
-| **FR-68** | Check marketing permission and the country's rules on inducements before sending anything. This is a materially harder compliance problem than answering questions. | MUST |
-| **FR-69** | Cap how often any one player is contacted, across all campaigns. | MUST |
-| **FR-70** | Gambling-harm outreach is a completely separate path from commercial outreach, with its own approval and wording. | MUST |
-| **FR-71** | **Never send commercial messages to self-excluded, cooling-off, or at-risk players.** | MUST |
-
-## 2.13 Setting up and configuring an operator
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-72** | Operators set themselves up: connect help desk → connect back office → map player identity → check which capabilities they have → adopt procedures → rehearse → go live. | MUST |
-| **FR-73** | The capability check during setup decides which procedures that operator gets (see FR-10). | MUST |
-| **FR-74** | Configurable per operator, at minimum: confidence thresholds, emotion thresholds, always-hand-over topics, reply cap, waiting time, speed limit, disclosure wording, gambling-harm wording, languages, country mapping, opening hours, handover destinations, action permissions, and the stop switches. | MUST |
-| **FR-75** | Store each operator's system credentials separately, and let them be revoked individually. | MUST |
-| **FR-76** | **Stop switches** — one per operator and one global — that immediately stop everything the agent says to players, while still receiving messages, assessing them, and keeping records. | MUST |
-| **FR-77** | Every procedure change is rehearsed before it goes live. | MUST |
-
-## 2.14 Connecting to chat channels
-
-Which channels we support is still open. These hold whatever we choose.
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-78** | A translation layer converts each channel's messages into one common format, and formats replies for each channel. | MUST |
-| **FR-79** | Accept incoming messages quickly and do the thinking separately. The agent takes longer than most channels will wait. | MUST |
-| **FR-80** | Don't assume messages always arrive. Check periodically against the source and pick up anything missed. | MUST |
-| **FR-81** | Treat an incoming notification as "something happened, go look" rather than trusting its contents. Messages don't arrive in order. | MUST |
-| **FR-82** | Never send the same reply twice. A duplicate message to a player is worse than a slow one. | MUST |
-| **FR-83** | Assume a sent message can't be edited or deleted. A wrong answer about someone's withdrawal is permanent and public. | MUST |
-| **FR-84** | Limit how hard we query each operator's systems. We must not be the reason an operator's back office falls over. | MUST |
-
-## 2.15 Voice (third release)
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-85** | Support voice as another channel, using the same procedures and the same safety checks. | MUST |
-
-## 2.16 Reporting
-
-| ID | Requirement | |
-|---|---|---|
-| **FR-86** | A dashboard per operator: volume, how much was automated, how much was handed over and why, satisfaction scores, response and resolution times, confidence spread, most common topics. | MUST |
-| **FR-87** | Write the outcome of each conversation back into the operator's own help desk, so they can analyse it in the tools they already use. | MUST |
-| **FR-88** | Report the financial case: contacts handled, agent hours saved, cost per contact. The person signing the cheque will ask. | MUST |
-| **FR-89** | A review queue where humans check a sample of conversations, and their corrections feed back into the procedures. | MUST |
-| **FR-90** | Alert on: confidence drifting, handovers spiking, unusual gambling-harm patterns, emotion detection drifting, operator systems failing, messages failing to send. | MUST |
-| **FR-91** | Report emotion readings and handover outcomes per market, so FR-34's thresholds can be tuned against real data. | MUST |
-| **FR-92** | Export insights on recurring problems for the operator's product team. | SHOULD |
+The Player persona covers VIP players too — a VIP asking about a withdrawal is asking the same question as anyone else. The VIP & Retention Manager is the operator-side stakeholder who manages those players, not the player.
 
 ---
 
-# Part 3 — How well it must do it
+## 4. What players actually ask
 
-## 3.1 Speed
+Six categories, in descending order of what they cost us to get wrong.
 
-| ID | What | Target |
-|---|---|---|
-| **NFR-1** | Player sees *something* | Under 3 seconds, 95% of the time |
-| **NFR-2** | Player has the actual answer | Under 8 seconds, 95% of the time |
-| **NFR-3** | Absolute ceiling before giving up and handing over | 15 seconds |
-| **NFR-4** | Safety checks complete | Under 0.4 seconds |
-| **NFR-5** | On channels with no "typing…" indicator, send an immediate acknowledgement | Within NFR-1 |
-| **NFR-6** | Stop switch takes effect | Under 10 seconds |
+| # | Category | Share of volume | Dominant emotion | Priority |
+|---|---|---|---|---|
+| 1 | Financial & transactional | **35–40%** | Frustration, urgency | High |
+| 2 | Account verification (KYC / AML) | — | Impatience, friction | Medium-high |
+| 3 | Bonuses, promotions & VIP | — | Confusion | Medium |
+| 4 | Gameplay, settlement & technical | — | Anger | Medium |
+| 5 | Responsible gaming & safety | — | Vulnerability, distress | **Critical** |
+| 6 | Account access & security | — | Anxiety | High |
 
-## 3.2 Volume
+Only category 1 has a volume figure in our sources. We should instrument the rest during the first operator integration rather than guess.
 
-| ID | What | Target |
-|---|---|---|
-| **NFR-7** | Sustained load per operator | 100,000 conversations a month |
-| **NFR-8** | Sudden spike handled without slowing down | 10× normal |
-| **NFR-9** | One operator's spike must not slow another's | No knock-on effect |
+Two observations that shape the build:
 
-## 3.3 Staying up
+**Emotion is a routing signal, not decoration.** The taxonomy records a dominant emotion per category because the same factual answer lands differently depending on the player's state. "Your withdrawal is held pending KYC" is fine for a calm player and inflammatory for one who has been waiting three days and already been told this twice.
 
-| ID | What | Target |
-|---|---|---|
-| **NFR-10** | Message intake available | 99.9% |
-| **NFR-11** | **When something breaks, conversations go to humans — never to silence** | Always |
-| **NFR-12** | No player message lost, even during a partial outage | Zero |
-
-## 3.4 Security and keeping operators apart
-
-| ID | Requirement | |
-|---|---|---|
-| **NFR-13** | Operators are separated at the database level. No possible query can return one operator's player data to another. | MUST |
-| **NFR-14** | Operator credentials are encrypted and never written to logs. | MUST |
-| **NFR-15** | We ask for the narrowest possible access — read-only until the action release. | MUST |
-| **NFR-16** | Personal details are masked before anything reaches an AI provider. | MUST |
-| **NFR-17** | Secure development process, with penetration testing before the first live operator. | MUST |
-
-> **NFR-13 is the highest-severity requirement here.** One operator seeing another operator's players is the failure that ends the company.
-
-## 3.5 Data protection and where data lives
-
-| ID | Requirement | |
-|---|---|---|
-| **NFR-18** | The AI provider keeps nothing and trains on nothing. | MUST |
-| **NFR-19** | Which country data is stored in is configurable per operator and per market. | MUST |
-| **NFR-20** | How long data is kept is configurable per operator and per market. | MUST |
-| **NFR-21** | Support "delete everything about me" requests, across conversations and records. | MUST |
-
-## 3.6 Proving what happened
-
-| ID | Requirement | |
-|---|---|---|
-| **NFR-22** | Any interaction can be reconstructed completely: what was looked up, what was decided, what was said, under which version of which procedure and which settings. | MUST |
-| **NFR-23** | Records can't be altered, and tampering would be detectable. | MUST |
-| **NFR-24** | Records can be exported in a form an operator can hand to a regulator. | MUST |
-| **NFR-25** | SOC 2 Type II certification. Enterprise deals will require it. | MUST |
-
-## 3.7 Running the service
-
-| ID | What | Target |
-|---|---|---|
-| **NFR-26** | A procedure change reaches production (after rehearsal) | Under 1 hour |
-| **NFR-27** | New operator from signing to first live conversation | Days, not weeks |
-| **NFR-28** | Our own team can see what's happening per operator and respond to incidents | Continuously |
-
-## 3.8 Ease of authoring
-
-| ID | What | Target |
-|---|---|---|
-| **NFR-29** | A CS lead or compliance officer can write and rehearse a new procedure without an engineer | Under a day, unaided |
-
-> **NFR-29 is what turns the procedure engine into an asset rather than a config file.** If writing a procedure needs an engineer, we've built a slower version of hard-coded rules.
+**Category 5 is not a category.** It is a condition that can appear inside any of the other five. A player can reveal gambling distress in the middle of a bonus question. Screening therefore runs on every message regardless of what the message appears to be about — see §10.
 
 ---
 
-# Part 4 — What ships when
+## 5. How the agent works: AI Procedures
 
-```
-V1  Read and answer      →  V2  Act and assist      →  V3  Reach out and talk
-    66 new requirements       10 new requirements        6 new requirements
-    35–50% automated          70–85% automated           + prevented contacts
-    Wins on: accuracy         Wins on: parity            Wins on: retention
-    Risk: wrong answer        Risk: wrong transaction    Risk: wrong recipient
-```
+### 5.1 The idea
 
-## 4.1 V1 — Read and answer
+A support scenario is written down as a procedure: what must be true before we start, the steps in order, what we are never allowed to do, and what gets logged at the end. The agent executes the procedure. It does not improvise the sequence.
 
-**Goal:** a compliant, accurate agent that knows the player's actual account, answers what it safely can, and hands over everything else cleanly.
+This is the central design decision of the product, and it is worth being explicit about why.
 
-| Area | Requirements |
-|---|---|
-| Procedure engine | FR-1 – FR-12 |
-| Starting procedures | FR-13, FR-14 |
-| Identity | FR-15 – FR-19 |
-| Understanding messages | FR-20 – FR-25 |
-| Emotion and routing | FR-26 – FR-35 |
-| Handover | FR-36 – FR-41 |
-| Conversation mechanics | FR-42 – FR-46 |
-| Responsible gambling | FR-47 – FR-53 |
-| Operator content | FR-54 – FR-57 |
-| Setup and configuration | FR-72 – FR-77 |
-| Channels | FR-78 – FR-84 |
-| Reporting | FR-86 – FR-91 |
-| Everything in Part 3 | NFR-1 – NFR-24, NFR-26 – NFR-29 |
+The obvious alternative is to give a model a set of tools and let it work out what to do. That approach is more flexible and it is how most agent demos are built. It is also unshippable here, because you cannot tell a regulator what the agent will do — only what it did. Every audit becomes an argument about sampling.
 
-**Included even though nothing uses it yet:** the full step list including actions (FR-4, FR-12), and read-only credentials (NFR-15). Both exist so V2 is a settings change, not a rebuild.
+With procedures, the control flow is fixed and inspectable before anything runs. The model still does the hard language work: understanding what the player meant, and writing the reply. It does not decide which systems to touch or in what order. That decision was made by a named human when the procedure was approved.
 
-**Deliberately left out:** all actions, proactive outreach, voice, agent suggestions. SOC 2 certification runs alongside and won't have finished.
+The practical consequence is that we can prove things. "No path through this procedure discloses a balance before identity is verified" is a property we can check by examining the procedure, not by testing a thousand conversations and hoping.
 
-## 4.2 V2 — Act and assist
+### 5.2 What every procedure contains
 
-**Goal:** cross from answering to doing. This is where the automation rate moves and where we match what the category claims.
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| AIP-01 | Preconditions | State that must hold before the procedure may start — identity verified, no active self-exclusion, account not frozen. If a precondition fails, the procedure does not run | Read |
+| AIP-02 | Steps | The ordered sequence of lookups, decisions, messages, and actions | — |
+| AIP-03 | Forbidden actions | Things this procedure may never do, stated explicitly. Enforced at runtime, not by convention | — |
+| AIP-04 | Escalation paths | Named conditions that hand to a human, and which team receives it | Escalate |
+| AIP-05 | Logging | What is recorded on completion, failure, and escalation | — |
+| AIP-06 | Required capabilities | Which back-office functions the procedure needs. If an operator's stack cannot provide one, the procedure is disabled for that operator rather than half-executed | — |
+| AIP-07 | Approval record | Who approved this version and when. Unapproved procedures cannot run in production | — |
 
-| Area | Requirements |
-|---|---|
-| Taking action | FR-58 – FR-64 |
-| Helping human agents | FR-65, FR-66 |
-| Insight export | FR-92 |
-| SOC 2 certified | NFR-25 |
-| Credentials extended to include actions | NFR-15 |
+### 5.3 Authoring, review and change control
 
-**V2 doesn't start on a date. It starts when V1 has proved:**
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| AIP-10 | Non-engineers can author | A support ops lead or compliance officer can write and edit a procedure without writing code | — |
+| AIP-11 | Versioned | Every change creates a new version. Old versions are retained and remain readable | — |
+| AIP-12 | Approval gate | A procedure that touches money, entitlements, or account state requires named human approval before it can run in production | — |
+| AIP-13 | Pre-approval validation | Before approval, the system checks the procedure for unreachable steps, missing capabilities, disclosure before identity verification, and actions the operator's licence does not permit. Failures block approval | — |
+| AIP-14 | Test before live | Procedures can be run against recorded or synthetic conversations and the outcomes inspected, without touching a live account | — |
+| AIP-15 | Instant disable | Any procedure can be turned off immediately, per operator, without a deploy | — |
+| AIP-16 | Change audit | Who changed what, when, and what the previous version said — retained for the full regulatory retention period | — |
+| AIP-17 | Composition | A procedure can call another procedure, so shared sequences (identity check, escalation packaging) are written once | — |
+| AIP-18 | Per-operator variants | An operator can adapt a standard procedure to their rules without forking it away from platform updates | — |
 
-- Wrong answers about someone's account stay below 0.5%
-- Zero occurrences of generated text on a forbidden topic
-- Zero occurrences of the agent talking over a human
-- The audit trail has survived a real compliance review
+### 5.4 Coverage
 
-Actions are the point where a wrong answer becomes a wrong transaction. The accuracy bar is the gate, not the calendar.
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| AIP-20 | Full taxonomy coverage | Procedures must exist for every sub-category in §6–§11, not only the high-volume ones. A category with no procedure routes to a human by default, never to a guess | — |
+| AIP-21 | Unknown intent handling | When the classifier cannot place a message with confidence, the agent asks a clarifying question or escalates. It does not pick the closest match and proceed | Escalate |
+| AIP-22 | Multi-intent messages | A message containing two requests ("where's my withdrawal and can you close my account") is decomposed and each part handled, with the protective request taking priority | — |
+| AIP-23 | Mid-conversation intent change | If the player changes subject, the agent abandons the current procedure cleanly rather than continuing to execute it | — |
 
-## 4.3 V3 — Reach out and talk
+### 5.5 What the model does and does not do
 
-**Goal:** stop waiting for problems. Support becomes a way to keep players rather than a cost.
-
-| Area | Requirements |
-|---|---|
-| Proactive outreach | FR-67 – FR-71 |
-| Voice | FR-85 |
-
-Reaching out first brings a compliance problem the first two releases don't have: uninvited contact is governed by marketing permission and each country's rules on encouraging play, and messaging a self-excluded player is categorically worse than answering someone badly. **FR-71 is the requirement to be most careful with in this document.**
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| AIP-30 | Model classifies | The model determines what the player is asking about and how distressed they are | — |
+| AIP-31 | Model composes | The model writes the reply, in the player's language and an appropriate tone | — |
+| AIP-32 | Model does not choose actions | The model never selects which system to call or which step comes next. That is the procedure's job | — |
+| AIP-33 | Model does not invent facts | Every factual claim in a reply — balance, status, date, amount, requirement — traces to a system response. Anything not retrieved is not stated | — |
+| AIP-34 | Grounding check | Before a reply is sent, it is checked for claims that do not trace to retrieved data. Ungrounded replies are regenerated or escalated | — |
 
 ---
 
-# Part 5 — What success looks like
+## 6. Financial and transactional
 
-## 5.1 V1
+The largest category — 35–40% of volume — and the one where the player is angriest, because it is their money and it is missing. Most of these conversations are not actually complicated. They are conversations where nobody has yet looked at the transaction.
 
-Set against a read-only agent. **These are not the numbers competitors advertise, and must not be presented as if they were.**
+### 6.1 Withdrawal tracking and delays
 
-| Measure | Target | Note |
+> *"I requested a $1,200 withdrawal to my Visa card 3 days ago, but it's still showing as 'Pending'. Why haven't I received my cash?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| PAY-01 | Withdrawal status | Reports the current state of a pending withdrawal — requested, approved, sent, cleared — with the date of each transition | Read |
+| PAY-02 | Delay root cause | Identifies why it is held: unmet wagering, missing documents, manual risk review, threshold breach, or normal banking time. Names the actual reason, not a generic one | Read |
+| PAY-03 | Resolution steps | States exactly what the player must do to unblock it, with specific figures — "$25 of wagering remaining on slots", not "complete your wagering" | Read |
+| PAY-04 | Expected timing | Gives the remaining expected window based on the actual payment method and its current state, not a generic policy range | Read |
+| PAY-05 | Cancelled withdrawal | Explains why a withdrawal was cancelled and returned to the account balance, including whether the player, the system, or a risk rule did it | Read |
+| PAY-06 | Reverse withdrawal | Explains the reversal setting and, where the licence permits reversal, how to turn it off. Where a jurisdiction prohibits reversal, states that plainly | Explain |
+| PAY-07 | Withdrawal limits | Reports the player's applicable daily, weekly and monthly limits by method and account level, and how much of each remains | Read |
+| PAY-08 | Method availability | Explains which withdrawal methods are available on this account and why one may be unavailable | Explain |
+| PAY-09 | Risk review escalation | When a withdrawal is in manual review, escalates to the risk team with the transaction, the trigger, and the player's history assembled | Escalate |
+
+### 6.2 Deposits and uncredited funds
+
+> *"My bank account shows $150 was debited by your site, but my casino wallet balance still says $0.00!"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| PAY-10 | Deposit lookup | Finds the deposit by amount, method, and approximate time when the player cannot give a reference | Read |
+| PAY-11 | Status reconciliation | Compares what the payment provider says against what the account balance shows, and reports the discrepancy rather than either side alone | Read |
+| PAY-12 | Completed but not credited | Where the provider confirms success but the balance does not reflect it, escalates to payments with both records attached. Never tells the player to wait when the money has demonstrably arrived | Escalate |
+| PAY-13 | Pending deposits | Explains the clearing window for the specific method and the current network or provider state | Read |
+| PAY-14 | Failed deposits | Explains why it failed and what to do differently. Where a refund is due, confirms whether it has been issued and when it should land | Read |
+| PAY-15 | Declined card errors | Translates the provider's error code into a plain-language cause and the player's next step | Explain |
+| PAY-16 | Bank-side blocks | Where the decline came from the player's own bank — including gambling-transaction blocks — says so, since nothing we do will fix it | Explain |
+| PAY-17 | Crypto confirmations | Reports required confirmation count, confirmations received, and the transaction's state on chain | Read |
+| PAY-18 | Crypto mismatches | Handles wrong network, wrong asset, underpayment, and stuck transactions, escalating where manual recovery is needed | Escalate |
+| PAY-19 | Deposit limits | Reports remaining deposit headroom against any limits in force, including self-imposed ones | Read |
+
+### 6.3 Payment methods, currency and rules
+
+> *"I deposited using my MasterCard, but the system won't let me select MasterCard to withdraw. Why?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| PAY-20 | Closed-loop rule | Explains why funds must return to the instrument they came from, and which of the player's methods are eligible for withdrawal | Explain |
+| PAY-21 | Third-party payments | Explains that an account belonging to someone else — spouse, family, friend — cannot be used, and why this is an AML requirement rather than a preference | Explain |
+| PAY-22 | Currency conversion | Explains an FX charge on a specific transaction, showing rate and amount, and who levied it | Explain |
+| PAY-23 | Fee queries | Explains any fee applied to a specific transaction and its source | Read |
+| PAY-24 | Method management | Explains how to add, remove or verify a payment method and what verification each requires | Explain |
+| PAY-25 | Chargeback contact | Recognises a message that indicates a chargeback or bank dispute and routes it immediately to the payments and risk teams without attempting to resolve it | Escalate |
+
+---
+
+## 7. Account verification — KYC and AML
+
+The single largest source of friction in a player's life, and the point where most withdrawal complaints actually originate. The requirement here is not to speed up verification. It is to make its state legible, so the player stops guessing.
+
+One constraint runs through this whole section: where an account is under an anti-money-laundering investigation, the agent must not reveal that an investigation exists or why. Disclosing it is a criminal offence in several licensed markets. The agent gives the player the neutral, approved wording and escalates. This is a platform-level rule, not an operator setting.
+
+### 7.1 Document status and rejections
+
+> *"My utility bill was rejected because it didn't show my full name. Can I submit a PDF of my internet bill instead?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| KYC-01 | Verification status | Reports the player's overall verification state and which specific checks are outstanding | Read |
+| KYC-02 | Document status | Reports the state of each submitted document — received, in review, approved, rejected — with dates | Read |
+| KYC-03 | Rejection reason | Gives the actual reason a document was rejected: glare, cropped edges, expired, name mismatch, address mismatch | Read |
+| KYC-04 | How to fix it | Tells the player exactly what to submit instead, with the requirements for that document type | Explain |
+| KYC-05 | Acceptable documents | Lists what counts as valid proof of identity, address, and payment method for this player's jurisdiction | Explain |
+| KYC-06 | Expected timing | Gives realistic review timing based on the current queue, not a marketing figure | Read |
+| KYC-07 | Upload help | Walks the player through the upload process and diagnoses common failures — file size, format, portal errors | Explain |
+| KYC-08 | Rejection loop | Detects a player rejected repeatedly on the same document and escalates to a human rather than sending them round again | Escalate |
+| KYC-09 | Verification effects | Explains what verification unlocks — withdrawal eligibility, higher limits, full account access | Explain |
+
+### 7.2 Enhanced due diligence and source of funds
+
+> *"You locked my account and are asking for my bank statements and payslips. Why do you need my private financial records just for me to play?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| KYC-10 | Explain the request | Explains that source-of-funds checks are a regulatory obligation triggered by account activity, using approved wording that does not imply suspicion of the player | Explain |
+| KYC-11 | Document guidance | Explains what evidence satisfies the check, including for self-employed players, pensioners, and players with non-salary income | Explain |
+| KYC-12 | Submission status | Reports what has been received and what is still outstanding | Read |
+| KYC-13 | No investigation disclosure | Never confirms, denies, or hints at an AML investigation, its trigger, or its progress. Uses approved neutral wording and escalates | Escalate |
+| KYC-14 | Account restriction status | Explains what the player can and cannot currently do while the check is open | Read |
+| KYC-15 | Route to compliance | Hands source-of-funds conversations to the compliance team with the trigger and submission history assembled | Escalate |
+
+### 7.3 Profile and identity corrections
+
+> *"I accidentally misspelled my surname when signing up. How can I correct it to match my passport?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| KYC-20 | Contact detail updates | Updates email or phone after identity re-verification, and notifies the previous address that a change occurred | Change |
+| KYC-21 | Address change | Explains the process and evidence needed to change a registered address, and takes the submission | Explain |
+| KYC-22 | Name corrections | Never changes a registered name directly. Explains the evidence needed and routes to the verification team | Escalate |
+| KYC-23 | Date of birth | Never changes a date of birth under any circumstance. Routes to compliance, since a DOB change can indicate underage registration or account takeover | Escalate |
+| KYC-24 | Change during withdrawal | Refuses profile changes while a withdrawal is pending, explains why, and offers to proceed once it settles | Explain |
+| KYC-25 | Marketing preferences | Updates marketing contact preferences directly, with immediate effect | Change |
+
+---
+
+## 8. Bonuses, promotions and VIP
+
+Confusion rather than anger. These are usually arithmetic questions the player has no way to do themselves, because the numbers are inside our systems.
+
+### 8.1 Missing and uncredited promotions
+
+> *"I deposited $100 using code WELCOME100, but I only got my cash deposit and no bonus money!"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| BON-01 | Eligibility check | Checks whether the player qualified for the promotion and, if not, states the specific condition that failed | Read |
+| BON-02 | Missing code | Determines whether a promo code was applied at deposit, and explains the outcome if it was not | Read |
+| BON-03 | Threshold shortfall | Where the deposit fell below the minimum, states the actual amount deposited and the required minimum | Read |
+| BON-04 | Distribution delay | Distinguishes a batch-processing delay from a genuine failure and gives the expected crediting time | Read |
+| BON-05 | Free spins | Reports whether spins were credited, on which game, how many remain, and when they expire | Read |
+| BON-06 | Cashback | Explains the calculation basis, the qualifying period, and when it pays out | Read |
+| BON-07 | Opt-in status | Confirms whether the player opted into a campaign and when | Read |
+| BON-08 | Manual credit | Credits an owed bonus that failed to apply, within pre-approved value ceilings and once per qualifying event | Change |
+| BON-09 | Above-ceiling escalation | Escalates to the promotions team where the amount exceeds the automatic ceiling or eligibility is genuinely ambiguous | Escalate |
+
+### 8.2 Wagering and playthrough
+
+> *"I spent $200 playing Blackjack — why did my bonus wagering requirement only go down by $20?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| BON-10 | Remaining wagering | States the exact amount of wagering left, in currency, not as a multiplier | Read |
+| BON-11 | Game weighting | Explains how much each game type contributes — slots typically 100%, live blackjack often 10% — and shows the effect on the player's actual play | Explain |
+| BON-12 | Calculation basis | States whether wagering is calculated on the bonus alone or on deposit plus bonus, since the two differ by a factor of two and this is the most common cause of dispute | Explain |
+| BON-13 | Contribution breakdown | Shows what the player's recent play contributed toward the requirement, by game | Read |
+| BON-14 | Expiry | States when the active bonus expires and what happens to the bonus balance and any winnings at expiry | Read |
+| BON-15 | Forfeiture | Explains what the player loses by forfeiting, and processes the forfeit on explicit confirmation | Change |
+| BON-16 | Max bet breach | Where a bonus was voided for exceeding the maximum permitted bet, identifies the specific breaching bet and explains the rule | Read |
+| BON-17 | Locked withdrawal | Where withdrawal is blocked by active wagering, connects the two clearly — this is the most common hidden cause of a withdrawal complaint | Read |
+| BON-18 | Excluded games | Lists games that do not contribute or are barred while a bonus is active | Explain |
+
+### 8.3 VIP tiers and loyalty
+
+> *"Can I exchange my 5,000 reward points for cash instead of bonus credits?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| VIP-01 | Points balance | Reports current loyalty points and their cash or bonus equivalent | Read |
+| VIP-02 | Tier status | Reports current tier, points to the next tier, and the qualifying period | Read |
+| VIP-03 | Tier benefits | Explains what each tier provides — limits, cashback rate, dedicated manager, event access | Explain |
+| VIP-04 | Redemption | Explains redemption options and processes an in-policy redemption | Change |
+| VIP-05 | Tier loss | Explains why a tier was lost or downgraded and what maintaining it requires | Read |
+| VIP-06 | Status matching | Recognises a request to match VIP status from another operator and routes it to the VIP team. Never commits to a tier | Escalate |
+| VIP-07 | VIP recognition | Identifies a VIP player at the start of a conversation and applies their servicing rules — priority routing, named contact, higher ceilings | Read |
+| VIP-08 | VIP escalation path | Routes VIP escalations to the VIP team rather than general support | Escalate |
+| VIP-09 | Bespoke offers | Never invents, promises, or negotiates a bespoke offer. Routes to the VIP team | Escalate |
+| VIP-10 | RG override | Suppresses every VIP benefit, offer, and retention action where responsible gaming signals are present. Player safety outranks player value without exception | Protective |
+
+---
+
+## 9. Gameplay, settlement and technical
+
+Anger, and the category where being objectively right matters most, because the player believes they were cheated. Our advantage is that the round logs exist and the player cannot see them.
+
+### 9.1 Sportsbook settlement disputes
+
+> *"My bet on the football match was settled as a loss, but the team won in extra time!"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| SPT-01 | Settlement explanation | Retrieves the bet, the official result, and the settlement rule applied, and explains the outcome against the actual market terms | Read |
+| SPT-02 | Regular time vs extra time | Explains that most football markets settle on 90 minutes plus stoppage, which is the single most common settlement dispute | Explain |
+| SPT-03 | Void bets | Explains why a bet was voided and returned at odds of 1.00 — non-participant, market error, abandoned event, insufficient playing time | Read |
+| SPT-04 | Rule 4 deductions | Explains a deduction applied after a withdrawal from an event, showing the deduction rate and the effect on the return | Explain |
+| SPT-05 | Dead heat | Explains dead-heat settlement, where the stake is divided and paid at full odds — routinely mistaken for underpayment | Explain |
+| SPT-06 | Postponed events | Explains how postponement and abandonment are handled, and the period after which bets are voided | Explain |
+| SPT-07 | Cash out unavailable | Explains why cash out was suspended — price movement, live event suspension, VAR review, market closure | Read |
+| SPT-08 | Cash out value | Explains how a cash-out figure was derived and why it moved | Explain |
+| SPT-09 | Accumulator settlement | Walks through a multiple leg by leg, showing which legs won, lost, or voided, and how the return was calculated | Read |
+| SPT-10 | Palpable error | Explains a bet resettled because of an obviously incorrect price, and escalates where the player disputes it | Escalate |
+| SPT-11 | Bet history | Retrieves a specific bet by date, event, or amount when the player cannot give a reference | Read |
+| SPT-12 | Genuine settlement error | Where our data indicates the settlement was actually wrong, escalates to the trading team with the bet, the rule, and the official result attached. Never resettles autonomously | Escalate |
+| SPT-13 | Result dispute | Where the player disputes the official feed result, escalates rather than repeating our data at them | Escalate |
+
+### 9.2 Casino and live dealer interruptions
+
+> *"The slot machine froze right when 3 Scatter symbols hit for the Bonus Round! Did I lose my bonus feature?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| CAS-01 | Round state | Retrieves the state of an interrupted round from the game server and reports what actually happened | Read |
+| CAS-02 | Incomplete round recovery | Explains how an incomplete round resolves and whether the player can resume it | Read |
+| CAS-03 | Bonus feature interruption | Determines whether a triggered feature was recorded before the interruption and what happens to it | Read |
+| CAS-04 | Disconnection handling | Explains the game's disconnection protocol — auto-stand, auto-complete, or held open — for the specific game | Explain |
+| CAS-05 | Deducted but not played | Where a stake was taken and no round was recorded, escalates for refund with the round reference attached | Escalate |
+| CAS-06 | Session expiry | Explains a session timeout and what happened to the in-flight bet | Read |
+| CAS-07 | Live dealer disputes | Retrieves the live round record and explains the outcome. Escalates where the player disputes dealer conduct | Escalate |
+| CAS-08 | Game history | Retrieves a specific round by game, date, or amount | Read |
+| CAS-09 | Fairness questions | Explains RNG certification and independent testing without being defensive, and escalates a formal fairness complaint | Escalate |
+| CAS-10 | Provider outage | Recognises a known game provider outage and tells the player plainly rather than investigating their account | Read |
+
+### 9.3 Geolocation and access errors
+
+> *"I'm sitting on my couch in New Jersey, but your app says 'Location Verification Failed'."*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| TEC-01 | Geolocation failure | Explains why a location check failed and the practical fixes — disable VPN, enable location services, switch from Wi-Fi to mobile data | Explain |
+| TEC-02 | Border proximity | Explains that players near a licensed-zone boundary may fail checks legitimately, and what to try | Explain |
+| TEC-03 | VPN detection | Explains that VPN or proxy use blocks play, and that this is a licence condition rather than our preference | Explain |
+| TEC-04 | Error code translation | Translates any player-facing error code into a plain-language cause and next step | Explain |
+| TEC-05 | Repeated failures | Escalates a player who keeps failing location checks from a location that should be valid | Escalate |
+| TEC-06 | App and browser issues | Diagnoses common client problems — version, cache, permissions, network | Explain |
+| TEC-07 | Known incidents | Where a platform incident is in progress, tells the player, gives the expected restoration time, and does not raise a ticket per player | Read |
+| TEC-08 | Restricted jurisdiction | Explains clearly when a player is in a market we cannot serve, without implying a workaround exists | Explain |
+
+---
+
+## 10. Responsible gaming and player safety
+
+The critical category, and the one that overrides all others. Safety protocols supersede every business and retention objective — this is stated in our sources and it is not negotiable per operator.
+
+### 10.1 How screening works
+
+Every inbound message is screened for gambling distress before anything else happens. Not after intent classification, not only inside RG procedures, and not only when the conversation looks like it might be about gambling harm. First, always, on everything.
+
+The reason is that distress arrives inside other conversations. A player asking why their bonus was voided may, three messages later, say they cannot stop. If screening only ran on messages classified as RG-related, we would miss exactly the cases that matter most.
+
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| RG-01 | Screen every message | 100% of inbound messages are screened, in every channel and language, including messages on conversations already handed to a human | Protective |
+| RG-02 | Two independent layers | A deterministic phrase-based check and a model-based classifier run in parallel. Either one firing triggers the response. They are never required to agree — combining them by agreement would let each suppress the other | Protective |
+| RG-03 | Screen before anything else | Screening runs before intent classification, before any account lookup, and before any procedure begins | Protective |
+| RG-04 | Fail safe | If the classifier is unavailable, the deterministic layer still runs and the conversation is escalated. A screening outage never results in unscreened conversations | Protective |
+| RG-05 | Behavioural signals | Screening also considers account behaviour — rapid deposit escalation, session length, loss chasing, repeated limit-increase requests — not just message text | Protective |
+| RG-06 | Conversation-level state | Once RG concern is raised, it persists for the whole conversation and cannot be cleared by a subsequent normal-sounding message | Protective |
+
+### 10.2 Hard stop
+
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| RG-10 | Freeze generation | On detection, normal generative responses stop instantly. The agent does not continue the previous procedure, whatever it was | Protective |
+| RG-11 | Approved wording only | The response comes from compliance-approved wording, not free composition | Protective |
+| RG-12 | Suppress commercial content | All offers, bonuses, promotions, upsells and retention messaging are suppressed immediately and for the remainder of the conversation | Protective |
+| RG-13 | Immediate escalation | The conversation goes to a human RG specialist at top priority, with the trigger and context attached | Escalate |
+| RG-14 | Localised helplines | Presents the correct support resources for the player's jurisdiction — BeGambleAware, GAMSTOP, Spelpaus, and local equivalents | Protective |
+| RG-15 | Offer protective actions | Offers cooling-off and self-exclusion directly, without requiring the player to ask twice or navigate elsewhere | Protective |
+| RG-16 | Crisis language | Where a message indicates risk to the player's safety rather than gambling harm alone, follows a separate crisis path with emergency resources and immediate human involvement | Escalate |
+| RG-17 | No debate | The agent never argues with, minimises, or seeks to verify a player's statement of distress | Protective |
+
+### 10.3 Limits
+
+> *"I want to set a weekly deposit limit of $200 starting right now."*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| RG-20 | Set a limit | Applies deposit, loss, wager, or session limits on request | Protective |
+| RG-21 | Decrease immediately | A limit made more restrictive takes effect immediately, with no cooling-off period and no friction | Protective |
+| RG-22 | Increase requires waiting | A limit made less restrictive is subject to the statutory waiting period for the jurisdiction. The agent explains this and never expedites it | Explain |
+| RG-23 | Never remove early | Never removes or loosens a cooling-off period, limit, or exclusion before its term expires, regardless of how the player asks or who asks on their behalf | Protective |
+| RG-24 | Current limits | Reports all limits in force, their values, remaining headroom, and when any pending change takes effect | Read |
+| RG-25 | Reality checks | Configures session reminders and time alerts | Protective |
+| RG-26 | Limit-increase signal | Treats a request to raise limits as a risk signal to be considered alongside behavioural data, not as a routine settings change | Protective |
+
+### 10.4 Self-exclusion and closure
+
+> *"I want to close my account for 6 months because I need a break from gambling."*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| RG-30 | Cooling-off | Applies a short-term break immediately on request | Protective |
+| RG-31 | Self-exclusion | Applies self-exclusion for the requested term immediately. Never delays, never requires a reason, never routes it through a retention conversation first | Protective |
+| RG-32 | No retention attempt | Makes no offer and no attempt to talk the player out of it. The request is honoured, not negotiated | Protective |
+| RG-33 | Marketing suppression | Suppresses all marketing across every channel immediately on exclusion, not on the next campaign cycle | Protective |
+| RG-34 | Multi-brand enforcement | Where the operator runs several brands, applies the exclusion across all of them | Protective |
+| RG-35 | National schemes | Explains how to register with the national self-exclusion scheme and routes registration where we can assist | Explain |
+| RG-36 | Balance handling | Explains what happens to the remaining balance and any pending withdrawals on exclusion | Read |
+| RG-37 | Excluded player contact | Where an excluded player makes contact, does not re-engage them, does not offer reactivation, and routes anything beyond a factual answer to a human | Protective |
+| RG-38 | Reactivation | Never reactivates an excluded account. Routes to the RG team, which applies the jurisdiction's process | Escalate |
+| RG-39 | Account closure | Distinguishes a request to close from a request to self-exclude, confirms which the player means, and applies the more protective interpretation when it is ambiguous | Protective |
+| RG-40 | Confirmation record | Confirms every protective action to the player in writing and records it in the audit trail with a timestamp | Protective |
+
+### 10.5 Age and vulnerability
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| RG-45 | Underage indication | Where anything indicates the account holder may be under age, freezes engagement and escalates to compliance immediately | Escalate |
+| RG-46 | Third-party concern | Handles a report from a family member or friend about a player, without disclosing any account information to the reporter | Escalate |
+| RG-47 | Vulnerability markers | Recognises indications of financial hardship, bereavement, or cognitive impairment and adjusts handling accordingly | Protective |
+
+---
+
+## 11. Account access and security
+
+Anxiety. A player who thinks they have been hacked needs a fast, competent answer. The tension here is that every helpful action is also the action an attacker wants.
+
+### 11.1 Authentication and recovery
+
+> *"I got a new phone and lost access to my Authenticator app for 2FA. How can I log in?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| SEC-01 | Password reset | Triggers a password reset through the standard verified flow. Never sets, reveals, or transmits a password | Change |
+| SEC-02 | Reset link not arriving | Diagnoses delivery failures — spam filtering, wrong address on file, blocked domain — and resends | Change |
+| SEC-03 | Locked after failed attempts | Explains the lockout, its duration, and unlocks after successful identity verification where policy permits | Change |
+| SEC-04 | 2FA recovery | Explains the recovery process. Never disables or bypasses two-factor authentication itself — this is the highest-value target for account takeover | Escalate |
+| SEC-05 | Account recovery | Where a player has lost access to their registered email, routes to a manual identity-verification process and never accepts a new address on the player's word | Escalate |
+| SEC-06 | Identity challenge | Applies the operator's identity challenge before any account-specific disclosure, with a stronger challenge for security-related requests | Read |
+| SEC-07 | Failed verification | Where a player cannot verify, discloses nothing and offers the manual recovery route. Never partially confirms, never hints | Protective |
+
+### 11.2 Security alerts and unauthorised access
+
+> *"There's a withdrawal request on my account that I didn't authorize!"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| SEC-10 | Login alert explanation | Explains a login-notification email, including the time and approximate location of the login | Read |
+| SEC-11 | Suspected takeover | On any report of unauthorised access, immediately locks the account, terminates all sessions, and escalates to fraud — before investigating anything | Protective |
+| SEC-12 | Unauthorised transaction | Halts any pending withdrawal the player disputes and escalates to fraud with the transaction and session history assembled | Protective |
+| SEC-13 | Session termination | Ends all active sessions on request | Protective |
+| SEC-14 | Login history | Shows recent login activity so the player can identify what was not them | Read |
+| SEC-15 | Security hardening | Guides the player through enabling two-factor authentication and strengthening their credentials | Explain |
+| SEC-16 | No investigation detail | Explains that a fraud review is under way and what to expect, without disclosing detection methods or investigation specifics | Explain |
+
+### 11.3 Multiple accounts and household rules
+
+> *"My roommate and I both have accounts on your site. Why was my bonus canceled for 'Duplicate IP'?"*
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| SEC-20 | Duplicate account explanation | Explains the one-account-per-person rule and why the platform enforces it | Explain |
+| SEC-21 | Household bonus rules | Explains that promotions are typically limited to one per household or IP address, which is why a legitimate second player may be affected | Explain |
+| SEC-22 | Genuine household dispute | Where the player says they share an address with another genuine player, gathers the account references and routes to fraud. Never reinstates a voided bonus autonomously | Escalate |
+| SEC-23 | Second account request | Explains that a second account is not permitted and does not suggest a route around it | Explain |
+| SEC-24 | Duplicate closure | Explains what happens to a duplicate account and any balance on it | Explain |
+| SEC-25 | Account sharing | Explains that accounts may not be shared or transferred, and escalates where sharing appears to be happening | Escalate |
+
+---
+
+## 12. Escalation and human handover
+
+An escalation is a product feature, not a failure. Handled well, it is the second-best outcome. Handled badly, it is worse than never having engaged.
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| ESC-01 | Always-escalate floor | A platform-level list of situations that always reach a human — distress, underage indication, suspected takeover, chargeback, formal complaint, legal or regulator contact, media enquiry, threats of harm. Operators may add to this list and may never remove from it | Escalate |
+| ESC-02 | Frustration escalation | Escalates a player who is clearly angry or has repeated themselves, before their patience is exhausted rather than after | Escalate |
+| ESC-03 | Explicit request | Escalates immediately when the player asks for a human. Never asks them to justify it, never attempts one more time first | Escalate |
+| ESC-04 | Failure to resolve | Escalates when the agent cannot resolve the request, rather than looping | Escalate |
+| ESC-05 | Low confidence | Escalates when intent confidence is below threshold or retrieved data is contradictory | Escalate |
+| ESC-06 | Context package | Hands over the full transcript, the identified intent, everything retrieved, every action taken, and the reason for escalation — so the human never asks the player to start again | Escalate |
+| ESC-07 | Team routing | Routes to the right team: payments, risk, compliance, RG, fraud, VIP, trading | Escalate |
+| ESC-08 | Priority | Sets handover priority from category and detected distress. RG and safety escalations go top of queue unconditionally | Escalate |
+| ESC-09 | Stop on human reply | Once a human replies, the agent stops responding on that conversation and does not resume unless explicitly handed back | Escalate |
+| ESC-10 | Set expectations | Tells the player they are being transferred, to whom, and roughly how long it will take | Escalate |
+| ESC-11 | Out of hours | Where the receiving team is unavailable, says so honestly and gives a realistic response time. Never implies someone is about to reply | Escalate |
+| ESC-12 | Complaint handling | Recognises a formal complaint, records it against the regulatory clock, and routes it to the complaints process rather than treating it as a query | Escalate |
+| ESC-13 | Handback | Supports a human returning a conversation to the agent, with the agent aware of what the human already said | — |
+
+---
+
+## 13. Trust, security and audit
+
+The controls that let a regulated operator run this at all. These are enforced by the platform, around every procedure — they are not something a procedure author declares or can opt out of.
+
+### 13.1 Data protection
+
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| TRU-01 | Edge sanitisation | Incoming messages pass through a high-performance scrubbing stage before reaching any model. Card numbers, bank details, national identity numbers, passwords, and one-time codes are removed at the edge | — |
+| TRU-02 | Sanitise before tokenisation | Scrubbing happens before the message reaches a model provider, not after — otherwise the data has already left | — |
+| TRU-03 | Fail closed | If sanitisation fails or is unavailable, the message is not sent to a model. The conversation degrades to human handling rather than proceeding unscrubbed | Protective |
+| TRU-04 | Never echo secrets | Even where a player volunteers a password or card number, the agent never repeats it back and tells the player not to share it | Protective |
+| TRU-05 | Minimum necessary data | Each procedure retrieves only the fields it needs. Nothing is fetched speculatively | — |
+| TRU-06 | Provenance tagging | Every retrieved fact is tagged with the account it came from at the point of retrieval, and a reply cannot include a fact tagged to a different account. This is the only control that catches another player's data appearing in a response | Protective |
+| TRU-07 | No retention, no training | Player dialogue and operator data are never retained by model providers and never used for model training | — |
+| TRU-08 | Residency | Operator and player data stays in the required jurisdiction for the operator's licence | — |
+| TRU-09 | Encryption | Data encrypted in transit and at rest throughout | — |
+| TRU-10 | Erasure | Supports a player's right to erasure while preserving the regulatory audit record, by destroying the key that makes their personal data readable rather than deleting the record | — |
+| TRU-11 | Tenant isolation | One operator's data, procedures, and configuration are never reachable from another operator's environment | — |
+| TRU-12 | SOC 2 Type II | The platform operates under verified SOC 2 Type II controls | — |
+
+### 13.2 Action safety
+
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| TRU-20 | Verify before disclose | No account-specific information is disclosed before identity is verified. Enforced by the platform, not by each procedure remembering to | Protective |
+| TRU-21 | Verify before change | No account change without verified identity, at the strength the change warrants | Protective |
+| TRU-22 | Value ceilings | Every automatic action that moves value has a configured ceiling. Above it, a human approves | — |
+| TRU-23 | Rate limits | Per-player and per-operator caps on how often an action can be taken automatically, to bound the damage from any single fault | — |
+| TRU-24 | Exactly once | Every change executes at most once, even when messages are retried or duplicated. Where the outcome is genuinely uncertain, the action freezes and a human resolves it. We never blind-retry an action that moves money | — |
+| TRU-25 | Outcome verification | After a change, the agent confirms it actually took effect before telling the player it did — back offices are not always immediately consistent | — |
+| TRU-26 | Reversibility | Every automatic change records what would be needed to reverse it | — |
+| TRU-27 | Capability gating | Where an operator's stack cannot support a procedure's required capabilities, the procedure is disabled for that operator rather than partially executed | — |
+| TRU-28 | Kill switch | Any action type, procedure, or the whole agent can be stopped instantly, per operator, without a deploy | Protective |
+
+### 13.3 Audit
+
+| ID | Requirement | Detail | Type |
+|---|---|---|---|
+| TRU-30 | Complete record | Every message, classification, decision, retrieval, action, and escalation is logged | — |
+| TRU-31 | Tamper evidence | The audit record is append-only and tamper-evident | — |
+| TRU-32 | Decision traceability | For any past reply, we can reconstruct which procedure ran, which version, what data it saw, and why it said what it said | — |
+| TRU-33 | Retention | Records retained for the period each jurisdiction requires | — |
+| TRU-34 | Regulator export | Audit records exportable in a form a regulator or auditor can work with | — |
+| TRU-35 | RG action log | Every RG detection, action, and escalation is separately reportable, since this is the evidence of duty of care | — |
+| TRU-36 | Approval trail | Who approved each procedure version, and when, is part of the permanent record | — |
+
+---
+
+## 14. Proactive engagement and retention *(optional scope)*
+
+Marked optional in our source material. It is a genuinely different product mode — the agent starting conversations rather than answering them — and carries different regulatory risk, since an unsolicited message to the wrong player is a marketing compliance issue.
+
+| ID | Requirement | What the agent does | Type |
+|---|---|---|---|
+| PRO-01 | Churn signals | Identifies disengagement patterns and declining sentiment before the player leaves | Read |
+| PRO-02 | Re-engagement | Delivers a personalised re-engagement offer to an at-risk player, within approved campaign rules | Change |
+| PRO-03 | Milestone recognition | Recognises first deposit, tier upgrade, anniversary and similar events in real time | Read |
+| PRO-04 | Milestone reward | Credits the milestone reward and confirms it to the player | Change |
+| PRO-05 | RG suppression | Suppresses every proactive message where any RG signal, limit, or exclusion is present. This gate is checked at send time, not at campaign build time | Protective |
+| PRO-06 | Marketing consent | Respects marketing preferences and channel consent on every outbound message | Protective |
+| PRO-07 | Frequency capping | Caps how often a player receives proactive contact | Protective |
+| PRO-08 | Product feedback loop | Aggregates support interactions into recurring friction themes for product and design teams | Read |
+| PRO-09 | Attribution | Measures the retention and revenue effect of proactive actions, so the mode can be justified or stopped | Read |
+
+---
+
+## 15. Integrations
+
+The agent sits in the middle of the operator's existing stack and executes across it. No infrastructure replacement.
+
+| ID | System | What we need from it | Examples named in source |
+|---|---|---|---|
+| INT-01 | Player account management / back office | Player state, balance, transaction history, KYC status, limits, exclusions, bonus state | Softswiss, EveryMatrix, White Hat Gaming, custom platforms |
+| INT-02 | Payment providers | Transaction status, settlement state, refunds | Operator-dependent |
+| INT-03 | Helpdesk and ticketing | Create, update, categorise and close tickets; agent handover with full transcript | Zoho, Zendesk, Freshdesk |
+| INT-04 | CRM and campaign automation | Bonus eligibility, milestone gifts, retention campaigns | Smartico, Flows, Optimove |
+| INT-05 | Game and sportsbook data | Round records, bet history, settlement rules, official results | Provider-dependent |
+| INT-06 | Identity and KYC | Verification state, document status, rejection reasons | Provider-dependent |
+| INT-07 | Internal comms | Operational alerts, KPI summaries, RG escalation notifications, health status | Slack, Microsoft Teams |
+| INT-08 | Player channels | Where the agent talks to players | To be confirmed — see §17.4 |
+
+| ID | Requirement | Detail |
 |---|---|---|
-| Handled with no human involvement | 35–50% | Limited by how many questions are purely informational |
-| Human closed it, but the agent did the legwork | +25% | Real value even without actions |
-| Player satisfaction on agent conversations | 4.5 or better out of 5 | |
-| Time to first reply | Under 5 seconds | Against a human baseline measured in minutes |
-| Wrong answers about someone's account | Under 0.5% | The number that ends the product if it slips |
-| Gambling-harm signals correctly caught | Over 99% | A missed signal is a licence risk |
-| Over-handover in any single market | No more than 15% above the average | Catches badly tuned emotion thresholds |
-| Generated text on a forbidden topic | **Zero** | Any occurrence is a top-severity incident |
-| Agent talking over a human | **Zero** | |
-| One operator seeing another's data | **Zero** | |
-
-## 5.2 V2
-
-| Measure | Target |
-|---|---|
-| Handled with no human involvement | 70–85% |
-| Player satisfaction | 4.8 or better |
-| Incorrect actions taken | **Zero** |
-| Actions needing to be reversed | Under 0.1% |
-| Suggestions accepted by human agents | Over 60% |
-
-## 5.3 V3
-
-| Measure | Target |
-|---|---|
-| Contacts prevented by reaching out first | Measurable drop in matching incoming questions |
-| Messages sent to a self-excluded, cooling-off, or at-risk player | **Zero** |
-| Marketing permission breaches | **Zero** |
+| INT-10 | Capability-based | Integrations are described by what they can do, not by vendor. A new back office that provides the same capabilities works without changing any procedure |
+| INT-11 | Graceful degradation | Where a system is unavailable, affected procedures disable themselves and route to humans. The agent never guesses at data it could not retrieve |
+| INT-12 | Custom platforms | Operators on in-house back offices can be integrated through the same capability contracts |
+| INT-13 | Read-only start | An operator can run in read-only mode first and enable changes once they are satisfied |
 
 ---
 
-# Part 6 — Still to decide
+## 16. Non-functional requirements
 
-1. **Which chat channels and help desks.** Determines the translation layer and what rich features (buttons, etc.) are available. Next discussion.
-2. **How different operator back offices are.** How many platforms must we read from, and can they actually tell us about payments, verification, and bonuses? **This is the biggest unknown.** FR-10 and FR-73 are designed to survive a bad answer, but the value of the starting procedure library depends on it.
-3. **Where the AI runs and where data lives.** Whether player conversations may leave our infrastructure, and to which country. Must be settled before any prototype.
-4. **What counts as proving identity**, per country (FR-16). Getting this wrong is a data-protection incident.
-5. **How procedures are written** — a text format, a point-and-click builder, or structured plain English. Decides whether NFR-29 is real or aspirational. It's also the demo that wins deals.
-6. **How operators are separated** — logical separation within one system, or separate regional deployments. Data-residency rules may force the latter anyway, which makes stronger separation cheaper than it first looks.
-7. **First customer** — which operator, which markets, what volume. A single-market first customer is a materially easier V1.
-8. **Pricing** — per resolved conversation, per seat, or per volume. Changes what we must measure from day one.
-
----
-
-# Part 7 — What the competition claims
-
-From a competitor's published sales guide (`Competitor.pdf`, 7 pages). It's marketing, so every number is self-reported and unaudited. Treat it as **what buyers will expect**, not as proven engineering.
-
-| Their claim | Page | Where we stand |
+| ID | Requirement | Target |
 |---|---|---|
-| 80–90% automated; 91% in a case study | 3, 5 | Not reachable in V1 with read-only. Targeted in V2. |
-| Satisfaction 4.8+ | 3, 5 | Match in V1. |
-| Written, human-readable procedures | 4 | **Match, and go further.** This is the heart of our design (§2.1). |
-| Checks before starting; forbidden actions | 4 | Match in V1 (FR-2, FR-3). |
-| Gambling-harm monitoring on 100% of conversations | 4, 6 | **Match in V1. Non-negotiable** (FR-47). |
-| SOC 2, data masking, nothing retained or trained on | 4 | Posture in V1 (NFR-16, NFR-18); certified in V2 (NFR-25). |
-| 120+ languages | 6 | Match in V1 (FR-24). Their case study covers UK, Germany, France, Netherlands, Australia, Italy, Spain. |
-| Complete audit logging | 4 | Match in V1 (NFR-22 – NFR-24). |
-| Connects to back offices, help desks, CRM, chat | 4, 5 | V1, behind the translation layer (FR-78). |
-| Proactive outreach and retention | 6 | V3 (FR-67 – FR-71). |
-| Support insights for product teams | 6 | V2 (FR-92). |
-
-**Their worked example** (page 4) — reproduced because it's our benchmark (FR-14): *"Where Is My Deposit?"* — check identity → query the payment provider → cross-reference the CRM and back-office balance → work out the status → explain the timing, start a refund, or escalate to payments with the context → log it and update the ticket.
-
-**The gap we're aiming at:** they compete on taking action and on compliance guardrails. Their guide says nothing about how accurate the answers are, how they're grounded in real content, how emotion is handled, or how a procedure is validated before it goes live.
-
----
-
-# Glossary
-
-| Term | Meaning |
-|---|---|
-| **Back office** | The operator's internal system holding player accounts, balances, payments, and bonuses |
-| **Capability** | One specific question we can ask an operator's systems (e.g. "list recent deposits"). Operators support different sets |
-| **Cooling-off** | A voluntary short break from gambling that a player has set |
-| **Escalate / hand over** | Give the conversation to a human, with context |
-| **KYC** | "Know Your Customer" — the identity and document checks gambling operators are legally required to run |
-| **AML** | Anti-money-laundering checks, including questions about where a player's money came from |
-| **Inducement** | Wording that encourages someone to gamble more. Regulated, and in some markets restricted or banned |
-| **Operator** | A gambling company — our customer |
-| **Player** | The operator's customer — the person in the conversation |
-| **Procedure** | A written, versioned document describing how the agent handles one kind of question |
-| **Rehearsal (dry run)** | Running a procedure against real conversations and recording what it *would* have said, without sending |
-| **RG** | Responsible gambling — protecting players from gambling harm. A legal duty, not a courtesy |
-| **Self-exclusion** | A player formally barring themselves from gambling, often across a whole market |
-| **Wagering progress** | How much of a bonus's play-through requirement a player has completed before they can withdraw |
-| **V1 / V2 / V3** | The first, second, and third planned releases |
-| **MUST / SHOULD** | MUST = doesn't ship without it. SHOULD = strong default, tradeable |
-| **FR-n / NFR-n** | Permanent requirement IDs. FR = what it does, NFR = how well. IDs never change |
+| NFR-01 | Volume | 80,000–100,000+ live chats per operator per month |
+| NFR-02 | Peak elasticity | Absorbs sports-event and tournament spikes without degradation or queueing |
+| NFR-03 | Availability | 99.99% uptime |
+| NFR-04 | Redundancy | Multi-region deployment — subject to the residency conflict in §17.3 |
+| NFR-05 | First response | Instant. No queue at any load |
+| NFR-06 | Action latency | An action and its confirmation complete inside a normal conversational pause |
+| NFR-07 | Time to value | Integration and procedure deployment in weeks, not quarters |
+| NFR-08 | Language | English at launch. 120+ languages is optional scope — see §17.5 |
+| NFR-09 | Domain vocabulary | Correct handling of iGaming terminology — turnover, wagering requirement, cashout, RTP, accumulator, free spins — in every supported language |
+| NFR-10 | Cost per contact | Materially below the human baseline, measured per resolved contact |
+| NFR-11 | Screening latency | RG screening adds no perceptible delay, since it runs on every message |
+| NFR-12 | Degradation order | Under load, protective functions and RG screening are the last things to degrade, never the first |
+| NFR-13 | Observability | Live visibility of automation rate, escalation rate, RG triggers, action volumes and failures, per operator |
+| NFR-14 | Onboarding | A new operator can be configured and live without platform code changes |
 
 ---
 
-**Source:** `Competitor.pdf` — a competitor's published guide, *"AI Agents for Customer Support in iGaming."* 7 pages. Sales material; all figures self-reported and unaudited. Page references above point to it.
+## 17. Open questions
 
-**Companion:** `Design.md` — the technical design, which refers back to the requirement IDs used here.
+These are conflicts or gaps in the source material. Each needs a decision before the corresponding requirements are final.
+
+**17.1 — Two different automation targets.** §1.1 of the PRD states both "80% to 90%+ total support automation" and "a 40% reduction in manual support requirements". These describe different products. If 85% of conversations are fully automated, manual workload falls by far more than 40%. One of these is likely a conservative external commitment and the other an internal ambition, but we should know which is which before either appears in a contract.
+
+**17.2 — Volume figure is per operator, per month.** NFR-01 says 80,000–100,000+ monthly chats per operator. We have no concurrency figure, and concurrency is what actually sizes the system. 100,000 monthly chats is roughly 140 an hour on average, but a major fixture could put a large multiple of that into a fifteen-minute window. We need an expected peak concurrency, not just a monthly total.
+
+**17.3 — Multi-region redundancy versus data residency.** NFR-04 requires redundant multi-region deployment; TRU-08 requires data to stay in the licensed jurisdiction. For a single-jurisdiction operator these directly conflict. The resolution is probably multi-zone redundancy inside a region rather than across regions, which changes what 99.99% means.
+
+**17.4 — Channels are unspecified.** Neither source names the channels the agent operates in — live chat, email, in-app, WhatsApp, SMS. Channel choice affects latency expectations, identity verification strength, and message-length constraints. It should not stay open long.
+
+**17.5 — Language scope.** The PRD lists "instant responses in English" under the Player persona and "120+ languages" as an optional NFR. RG screening in particular must work in every language we accept messages in — a distress signal we cannot read is a distress signal we miss. Whatever we support for conversation, we must support for screening.
+
+**17.6 — Volume shares for five of six categories.** Only financial has a figure. We should instrument the rest during the first integration and revisit prioritisation once we have real distribution.
+
+**17.7 — Pricing model is out of scope here.** Cost per contact appears as an internal target (NFR-10). How the product is priced to operators is not addressed in either source.
+
+---
+
+## Appendix — Requirement index
+
+| Area | Prefix | Count |
+|---|---|---|
+| Responsible gaming | RG | 35 |
+| Trust, security and audit | TRU | 28 |
+| Financial and transactional | PAY | 25 |
+| AI Procedures engine | AIP | 25 |
+| Account verification (KYC/AML) | KYC | 21 |
+| Account access and security | SEC | 20 |
+| Bonuses and promotions | BON | 18 |
+| Non-functional | NFR | 14 |
+| Sportsbook settlement | SPT | 13 |
+| Escalation and handover | ESC | 13 |
+| Integrations | INT | 12 |
+| VIP and loyalty | VIP | 10 |
+| Casino and live dealer | CAS | 10 |
+| Proactive engagement *(optional)* | PRO | 9 |
+| Geolocation and technical | TEC | 8 |
+| **Total** | | **261** |
+
+By action type: **Read 57**, **Escalate 43**, **Protective 40**, **Explain 40**, **Change 10**, with the remaining 71 being platform, integration and non-functional requirements that carry no player-facing action type.
+
+Two things in that spread are worth noticing.
+
+**Only 10 requirements change a player's account.** Everything else reads, explains, protects, or hands over. That is the shape we want: the read path carries the volume and can ship before any change capability is switched on — see INT-13. It also means the expensive safety machinery in §13.2 guards a small, enumerable set of actions rather than the whole product.
+
+**Protective and Escalate together outnumber Read.** That is not padding. In a regulated market the agent's most common correct action, after answering, is to restrict or to hand over — and both need specifying as carefully as the answers do.
